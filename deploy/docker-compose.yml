@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # ========== Elasticsearch（预装 IK 分词） ==========
+  elasticsearch:
+    # 国产极限科技镜像：已预装 IK 中文分词器
+    image: infinifinity/elasticsearch:8.11.0-ik
+    container_name: smart-ticket-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      retries: 12
+      timeout: 5s
+    networks:
+      - ticket-net
+
+  # ========== Kafka（KRaft 模式，无需 Zookeeper） ==========
+  kafka:
+    image: bitnami/kafka:3.6
+    container_name: smart-ticket-kafka
+    environment:
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      retries: 10
+      timeout: 10s
+    networks:
+      - ticket-net
+
+  # ========== Agent 后端服务 ==========
+  agent-service:
+    build:
+      context: ..
+      dockerfile: agent-service/Dockerfile
+    container_name: smart-ticket-agent
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      - ES_HOST=http://elasticsearch:9200
+      - KAFKA_BOOTSTRAP=kafka:9092
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - LLM_MODEL=deepseek-chat
+      - LLM_BASE_URL=https://api.deepseek.com
+      - EMBEDDING_MODEL=text-embedding-v3
+      - RERANK_MODEL=gte-rerank-v2
+      - VECTOR_DIMS=1024
+    ports:
+      - "8000:8000"
+    volumes:
+      - ..:/app
+    networks:
+      - ticket-net
+
+  # ========== Streamlit 前端 ==========
+  streamlit-app:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+    container_name: smart-ticket-web
+    depends_on:
+      - agent-service
+    environment:
+      - ES_HOST=http://elasticsearch:9200
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+    ports:
+      - "8501:8501"
+    volumes:
+      - ..:/app
+    networks:
+      - ticket-net
+
+volumes:
+  es_data:
+    driver: local
+  kafka_data:
+    driver: local
+
+networks:
+  ticket-net:
+    driver: bridge
