@@ -9,10 +9,16 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
 
 # 添加项目根目录到 path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+ROOT_DIR = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(ROOT_DIR))
+
+# 加载 .env 环境变量
+load_dotenv(ROOT_DIR / ".env")
+
 from data.ingestion.embedding_service import DashScopeEmbedding
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
