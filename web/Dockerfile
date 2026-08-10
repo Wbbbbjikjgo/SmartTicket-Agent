@@ -9,7 +9,7 @@ RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ \
 
 # 安装依赖
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=300 -r requirements.txt
 
 # 复制代码
 COPY . .

@@ -1,0 +1,10 @@
+# 防止敏感信息和大文件被打进镜像
+.env
+.git
+.gitignore
+__pycache__/
+*.pyc
+venv/
+*.md
+data/raw_data/
+deploy/
