@@ -1,0 +1,57 @@
+# Agent 系统配置
+agent:
+  llm:
+    model: ${LLM_MODEL:-deepseek-chat}
+    base_url: ${LLM_BASE_URL:-https://api.deepseek.com}
+    api_key: ${DEEPSEEK_API_KEY}
+    temperature: 0.1
+    max_tokens: 4096
+
+  embedding:
+    model: ${EMBEDDING_MODEL:-text-embedding-v3}
+    api_key: ${DASHSCOPE_API_KEY}
+    dims: 1024
+
+  rerank:
+    model: ${RERANK_MODEL:-gte-rerank-v2}
+    api_key: ${DASHSCOPE_API_KEY}
+    top_n: 10
+
+  intent:
+    # 意图分类体系
+    intents:
+      - create_ticket    # 创建工单
+      - query_ticket     # 查询工单
+      - search_knowledge # 知识检索
+      - assign           # 派单/转人工
+      - chitchat         # 闲聊
+
+  slot:
+    # 必填槽位
+    required:
+      - problem_type
+      - description
+    # 可选槽位
+    optional:
+      - product
+      - urgency
+      - device
+    # 置信度阈值（低于此值需追问）
+    confidence_threshold: 0.7
+
+  routing:
+    # 规则过滤命中置信度阈值
+    rule_confidence_threshold: 0.8
+    # 技能组映射
+    skill_groups:
+      登录问题: IT支持组
+      网络问题: IT支持组
+      设备故障: 维修工程师
+      财务问题: 财务组
+      系统故障: IT支持组
+
+  knowledge:
+    # 知识去重相似度阈值
+    dedup_threshold: 0.92
+    # 知识质量最低分
+    min_quality_score: 0.6

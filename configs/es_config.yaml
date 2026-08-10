@@ -1,0 +1,13 @@
+# Elasticsearch 配置
+es:
+  host: ${ES_HOST:-http://localhost:9200}
+  indices:
+    tickets: ${ES_INDEX_TICKETS:-tickets}
+    knowledge_base: ${ES_INDEX_KNOWLEDGE:-knowledge_base}
+    faq: ${ES_INDEX_FAQ:-faq}
+  vector:
+    dims: 1024  # text-embedding-v3 维度
+    similarity: cosine
+  analyzer:
+    index: ik_max_word
+    search: ik_smart

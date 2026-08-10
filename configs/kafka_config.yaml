@@ -1,0 +1,13 @@
+# Kafka 配置
+kafka:
+  bootstrap_servers: ${KAFKA_BOOTSTRAP:-localhost:9092}
+  topics:
+    raw: ${KAFKA_TOPIC_RAW:-ticket-raw}       # 原始工单
+    routed: ${KAFKA_TOPIC_ROUTED:-ticket-routed}  # 规则路由后工单
+  consumer:
+    group_id: ticket-agent
+    auto_offset_reset: earliest
+    enable_auto_commit: true
+  producer:
+    acks: all
+    retries: 3

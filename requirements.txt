@@ -1,0 +1,32 @@
+# 大模型与AI框架
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langgraph>=0.2.0
+langchain-mcp-adapters>=0.0.1
+
+# 阿里云 DashScope（Embedding + Rerank）
+dashscope>=1.20.0
+
+# 搜索引擎
+elasticsearch>=8.11.0
+
+# 消息队列
+kafka-python>=2.0.2
+
+# 前端
+streamlit>=1.30.0
+
+# 向量检索（本地备选）
+faiss-cpu>=1.7.4
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 工具
+python-dotenv>=1.0.0
+pyyaml>=6.0
+httpx>=0.25.0
+
+# MCP 协议
+mcp>=1.0.0

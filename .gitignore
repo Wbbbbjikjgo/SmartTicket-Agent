@@ -1,0 +1,40 @@
+# 环境变量（含 API Key）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Docker 数据
+es_data/
+kafka_data/
+
+# 日志
+*.log
+logs/
+
+# 临时文件
+tmp/
+temp/
