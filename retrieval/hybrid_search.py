@@ -6,7 +6,7 @@ import os
 import sys
 import logging
 
-sys.path.insert(0, str(os.path.dirname(__file__).parent.parent))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from retrieval.query_rewriter import QueryRewriter
 from retrieval.hybrid_retriever.bm25_retriever import BM25Retriever
 from retrieval.hybrid_retriever.vector_retriever import VectorRetriever

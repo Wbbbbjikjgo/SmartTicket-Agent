@@ -8,7 +8,7 @@ import logging
 from elasticsearch import Elasticsearch
 
 # 添加项目根目录到 path
-sys.path.insert(0, str(os.path.dirname(__file__).parent.parent.parent))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from data.ingestion.embedding_service import DashScopeEmbedding
 
 logger = logging.getLogger(__name__)
