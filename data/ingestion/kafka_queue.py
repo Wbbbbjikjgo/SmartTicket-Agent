@@ -118,13 +118,15 @@ class TicketRouter:
     流程：Kafka消费 → 规则匹配 → 命中则直连路由 → 未命中走 LLM 清洗
     """
 
-    def __init__(self, rule_engine, llm_processor=None):
+    def __init__(self, rule_engine, llm_processor=None, ingest_handler=None):
         """
         rule_engine: RuleEngine 实例
         llm_processor: LLM 处理函数（规则未命中时调用）
+        ingest_handler: 路由完成后的回调（如写入 ES），接收路由后的工单 dict
         """
         self.rule_engine = rule_engine
         self.llm_processor = llm_processor
+        self.ingest_handler = ingest_handler
 
     def route(self, ticket: dict) -> dict:
         """
@@ -156,8 +158,48 @@ class TicketRouter:
         return ticket
 
     def handle_ticket(self, ticket: dict):
-        """Kafka 消费者回调：路由工单"""
+        """Kafka 消费者回调：路由工单并触发后续处理（如入库 ES）"""
         routed = self.route(ticket)
-        # 这里可以将路由结果写回 ES 或发送到下一个 topic
+        # 路由完成后调用回调（例如写入 ES）
+        if self.ingest_handler:
+            try:
+                self.ingest_handler(routed)
+            except Exception as e:
+                logger.error(f"工单后续处理失败: {e}")
         logger.info(f"工单路由完成: {routed.get('ticket_id')} → {routed.get('category', 'unknown')}")
         return routed
+
+
+def run_worker(ingest_handler=None, group_id: str = "ticket-agent"):
+    """
+    启动 Kafka 工单消费者 worker
+    流程：消费 ticket-raw → 规则/LLM 路由 → 回调入库
+    """
+    from preprocess.nlp_classifier import RuleEngine
+
+    rule_engine = RuleEngine()
+    router = TicketRouter(rule_engine=rule_engine, llm_processor=None, ingest_handler=ingest_handler)
+    consumer = TicketConsumer(group_id=group_id)
+
+    logger.info("Kafka 工单消费者 worker 启动，监听 topic: %s", TOPIC_RAW)
+    try:
+        consumer.consume(router.handle_ticket)
+    except KeyboardInterrupt:
+        logger.info("收到中断信号，停止消费")
+    finally:
+        consumer.close()
+
+
+if __name__ == "__main__":
+    # 确保项目根目录在 path 中
+    import sys
+    from pathlib import Path
+    ROOT_DIR = Path(__file__).parent.parent.parent
+    sys.path.insert(0, str(ROOT_DIR))
+
+    def _default_ingest(ticket: dict):
+        """默认入库回调：路由结果写入 ES（工单向量化入库）"""
+        from data.ingestion.ingest_docs import ingest_ticket
+        ingest_ticket(ticket)
+
+    run_worker(ingest_handler=_default_ingest)
