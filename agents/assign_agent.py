@@ -1,13 +1,16 @@
 """
 智能派单 Agent
 根据工单类型、优先级和技能组匹配，自动派发工单
+规则引擎（RuleEngine）优先，LLM 作为兜底
 """
 import os
 import json
 import logging
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
+
+from preprocess.nlp_classifier import RuleEngine
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +40,10 @@ class AssignAgent:
 
     SKILL_GROUPS = ["IT支持组", "维修工程师", "财务组", "客服组"]
 
-    # 规则映射（优先使用规则，LLM 作为兜底）
-    CATEGORY_TO_GROUP = {
-        "登录问题": "IT支持组",
-        "系统故障": "IT支持组",
-        "网络异常": "IT支持组",
-        "设备故障": "维修工程师",
-        "财务问题": "财务组",
-    }
-
     def __init__(self, ticket_tools=None):
         self.ticket_tools = ticket_tools
+        # 复用规则引擎做派单匹配（与工单分流规则保持一致）
+        self.rule_engine = RuleEngine()
         self.llm = ChatOpenAI(
             model=os.getenv("LLM_MODEL", "deepseek-chat"),
             base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
@@ -61,19 +57,23 @@ class AssignAgent:
         派单决策
         返回: {"skill_group": str, "priority": str, "reason": str, "assigned": bool}
         """
-        # Step 1: 规则匹配
-        category = ticket.get("problem_type", "") or ticket.get("category", "")
-        rule_group = self.CATEGORY_TO_GROUP.get(category)
+        # Step 1: 规则引擎匹配（复用 nlp_classifier.RuleEngine）
+        raw_text = " ".join(filter(None, [
+            ticket.get("description"),
+            ticket.get("problem_type"),
+            ticket.get("category"),
+        ]))
+        rule_result = self.rule_engine.match(raw_text)
 
-        if rule_group:
+        if rule_result["matched"] and rule_result["skill_group"]:
             result = {
-                "skill_group": rule_group,
-                "priority": ticket.get("urgency", "中"),
-                "reason": f"根据问题类型「{category}」规则路由到 {rule_group}",
+                "skill_group": rule_result["skill_group"],
+                "priority": rule_result["priority"] or ticket.get("urgency", "中"),
+                "reason": f"规则引擎匹配「{rule_result['category']}」自动派单",
                 "assigned": True,
             }
         else:
-            # Step 2: LLM 决策
+            # Step 2: LLM 决策（兜底）
             result = self._llm_assign(ticket)
 
         # Step 3: 执行派单
