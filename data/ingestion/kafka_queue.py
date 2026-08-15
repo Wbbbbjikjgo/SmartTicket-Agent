@@ -78,7 +78,6 @@ class TicketConsumer:
                 auto_offset_reset="earliest",
                 enable_auto_commit=True,
                 value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-                consumer_timeout_ms=1000,  # 无消息时 1s 超时退出
             )
             logger.info(f"Kafka Consumer 初始化成功，group: {self.group_id}")
         except KafkaError as e:
