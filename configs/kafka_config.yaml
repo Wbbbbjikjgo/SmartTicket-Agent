@@ -1,13 +1,42 @@
-# Kafka 配置
+# ============================================================
+# Kafka 消息队列配置（用于工单异步流转/解耦）
+# ============================================================
+
 kafka:
+  # -------- 连接地址 --------
+  # 优先读取环境变量 KAFKA_BOOTSTRAP，默认 localhost:9092
   bootstrap_servers: ${KAFKA_BOOTSTRAP:-localhost:9092}
+
+  # -------- 主题定义 --------
   topics:
-    raw: ${KAFKA_TOPIC_RAW:-ticket-raw}       # 原始工单
-    routed: ${KAFKA_TOPIC_ROUTED:-ticket-routed}  # 规则路由后工单
+    # 原始工单：用户刚提交未经任何处理的工单（原始数据）
+    raw: ${KAFKA_TOPIC_RAW:-ticket-raw}
+    
+    # 路由后工单：经过规则/智能路由分配了处理组后的工单
+    routed: ${KAFKA_TOPIC_ROUTED:-ticket-routed}
+
+  # -------- 消费者配置 --------
   consumer:
+    # 消费者组 ID（同一组内消费互斥，保证工单只被处理一次）
     group_id: ticket-agent
+    
+    # 当无偏移量或偏移量失效时的起始消费位置
+    # earliest：从最早消息开始消费（重跑历史数据用）
+    # latest：只消费新消息（正常生产环境推荐）
     auto_offset_reset: earliest
+    
+    # 是否自动提交消费偏移量
+    # true：系统自动标记消息已消费（简单但可能丢消息）
+    # false：手动提交（更可靠，但实现复杂）
     enable_auto_commit: true
+
+  # -------- 生产者配置 --------
   producer:
+    # 消息确认机制
+    # all：等待所有副本确认才成功（最可靠，但延迟高）
+    # 1：仅等待 Leader 确认（折中方案）
+    # 0：不等待确认（最快，可能丢数据）
     acks: all
+    
+    # 发送失败时的重试次数（网络抖动等临时故障可恢复）
     retries: 3
