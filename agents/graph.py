@@ -90,6 +90,7 @@ class MultiAgentOrchestrator:
             "slot_filling",
             self._route_after_slot,
             {
+                # 槽位完整 → 创建工单；槽位缺失 → 先追问补充信息（generate_response 输出追问）
                 "create_ticket": "create_ticket",
                 "follow_up": "generate_response",
             },
@@ -171,11 +172,8 @@ class MultiAgentOrchestrator:
         if not ticket_id:
             return {"step": "assign", "assign_result": {"success": False}}
 
-        ticket_info = {
-            "ticket_id": ticket_id,
-            "problem_type": state.get("slots", {}).get("problem_type"),
-            "urgency": state.get("slots", {}).get("urgency", "中"),
-        }
+        # 传递完整槽位信息（含 description），供规则引擎基于文本做派单匹配
+        ticket_info = {"ticket_id": ticket_id, **state.get("slots", {})}
         result = self.assign_agent.assign(ticket_info)
         return {
             "assign_result": result,
@@ -243,7 +241,8 @@ class MultiAgentOrchestrator:
         if state.get("slots_complete"):
             return "create_ticket"
         else:
-            return "follow_up"  # 追问用户补充信息
+            # 槽位不完整：返回追问消息给用户，待补充后再进入创建流程
+            return "follow_up"
 
     # ========== 公共接口 ==========
 
