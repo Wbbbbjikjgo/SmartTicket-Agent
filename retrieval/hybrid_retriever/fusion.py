@@ -15,9 +15,13 @@ def rrf_fusion(result_lists: list[list], k: int = 60) -> list:
 
     参数:
         result_lists: 多路检索结果列表，每路为 [{"id": ..., "score": ..., ...}, ...]
+            - "score" 为各检索器返回的原始相关性分数，来源是 ES 命中项的 `hit["_score"]`：
+              BM25 检索器为关键词相关性分数，向量检索器为余弦相似度分数。
+              该字段仅用于"同一文档在多路命中时保留分数更高的一路详情"，不参与最终排序。
+            - 最终排序依据为融合后的 "rrf_score"。
         k: RRF 常数（默认 60）
     返回:
-        融合排序后的结果列表
+        融合排序后的结果列表，每条额外包含 "rrf_score" 字段
     """
     # 计算每个文档的 RRF 分数
     rrf_scores = defaultdict(float)
@@ -27,7 +31,7 @@ def rrf_fusion(result_lists: list[list], k: int = 60) -> list:
         for rank, doc in enumerate(results, start=1):
             doc_id = doc["id"]
             rrf_scores[doc_id] += 1.0 / (k + rank)
-            # 保留最高原始分数的文档详情
+            # 保留最高原始分数的文档详情（score 来自 hit["_score"]，仅用于此处去重比较）
             if doc_id not in doc_map or doc["score"] > doc_map[doc_id]["score"]:
                 doc_map[doc_id] = doc
 
