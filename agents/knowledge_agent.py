@@ -60,14 +60,16 @@ class KnowledgeAgent:
         if not knowledge:
             return {"success": False, "message": "知识提炼失败"}
 
-        # Step 2: 向量化
+        # Step 2: 向量化（只计算一次，后续去重与入库复用）
+        content_vector = None
         if self.embedder:
             text_for_vec = f"{knowledge.get('title', '')} {knowledge.get('content', '')} {knowledge.get('solution', '')}"
-            knowledge["content_vector"] = self.embedder.embed_text(text_for_vec)
+            content_vector = self.embedder.embed_text(text_for_vec)
+            knowledge["content_vector"] = content_vector
 
         # Step 3: 去重检测
-        if self.es and self.embedder:
-            duplicate = self._check_duplicate(knowledge["content_vector"])
+        if self.es and content_vector:
+            duplicate = self._check_duplicate(content_vector)
             if duplicate:
                 return {
                     "success": False,
@@ -75,17 +77,18 @@ class KnowledgeAgent:
                     "duplicate": True,
                 }
 
-        # Step 4: 入库
+        # Step 4: 入库（复用 ingest_knowledge，统一向量化与写入逻辑）
         knowledge["source_ticket"] = ticket.get("ticket_id")
         knowledge["quality_score"] = self._evaluate_quality(ticket)
         knowledge["create_date"] = datetime.now().isoformat()
+        knowledge["kb_id"] = f"KB{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
         if self.es:
             try:
-                resp = self.es.index(index="knowledge_base", document=knowledge)
-                knowledge["kb_id"] = resp["_id"]
-                logger.info(f"知识沉淀成功: {knowledge['title']} (kb_id: {resp['_id']})")
-                return {"success": True, "kb_id": resp["_id"], "knowledge": knowledge}
+                from data.ingestion.ingest_docs import ingest_knowledge
+                ingest_knowledge(knowledge, content_vector=content_vector)
+                logger.info(f"知识沉淀成功: {knowledge['title']} (kb_id: {knowledge['kb_id']})")
+                return {"success": True, "kb_id": knowledge["kb_id"], "knowledge": knowledge}
             except Exception as e:
                 logger.error(f"知识入库失败: {e}")
                 return {"success": False, "message": f"入库失败: {e}"}
