@@ -150,4 +150,4 @@ def render():
                 "数量": [s["open"], s["assigned"], s["closed"]],
             }
         )
-        st.bar_chart(status_df.set_index("状态"), height=200, color=["#f59e0b", "#3b82f6", "#10b981"])
+        st.bar_chart(status_df.set_index("状态"), height=200, color="#8b5cf6")
