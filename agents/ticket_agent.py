@@ -40,6 +40,10 @@ class TicketAgent:
             max_tokens=2048,
         )
         # 绑定 FunctionCall 工具
+        # 说明：进程内 Agent 使用 DeepSeek 原生 FunctionCall（bind_tools）做工具决策，
+        #      工具 Schema 与 tools/mcp_ticket_server.py 的 MCP 服务共享同一份 TOOLS_DEFINITION，
+        #      执行统一走 ticket_tools.execute_tool（与 MCP handle_tool_call 同后端）。
+        #      MCP 用于跨进程/外部系统通过标准协议调用，两者职责不同、底层一致。
         from tools.function_tools import TOOLS_DEFINITION
         self.tools_def = TOOLS_DEFINITION
 
