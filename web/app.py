@@ -5,6 +5,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# 加载 .env 环境变量（API Key 等），必须在导入业务模块之前执行
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 import streamlit as st
 
 # ========== 页面配置 ==========

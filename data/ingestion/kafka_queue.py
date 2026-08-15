@@ -197,6 +197,10 @@ if __name__ == "__main__":
     ROOT_DIR = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(ROOT_DIR))
 
+    # 加载 .env（入库回调需要 Embedding API Key）
+    from dotenv import load_dotenv
+    load_dotenv(ROOT_DIR / ".env")
+
     def _default_ingest(ticket: dict):
         """默认入库回调：路由结果写入 ES（工单向量化入库）"""
         from data.ingestion.ingest_docs import ingest_ticket
