@@ -1,66 +1,153 @@
-"""工单看板页面"""
+"""工单看板页面（读取 Elasticsearch 实时数据）"""
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 import streamlit as st
+from elasticsearch import Elasticsearch
+
+
+def _es():
+    return Elasticsearch(os.getenv("ES_HOST", "http://localhost:9200"))
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _stats() -> dict:
+    """统计各状态工单数量"""
+    try:
+        es = _es()
+        agg = es.search(
+            index="tickets",
+            body={
+                "size": 0,
+                "aggs": {
+                    "by_status": {"terms": {"field": "status"}},
+                    "by_category": {"terms": {"field": "problem_type", "size": 10}},
+                },
+            },
+        )
+        by_status = {b["key"]: b["doc_count"] for b in agg["aggregations"]["by_status"]["buckets"]}
+        by_category = {b["key"]: b["doc_count"] for b in agg["aggregations"]["by_category"]["buckets"]}
+        total = sum(by_status.values())
+        return {
+            "total": total,
+            "open": by_status.get("open", 0),
+            "assigned": by_status.get("assigned", 0),
+            "closed": by_status.get("closed", 0),
+            "by_category": by_category,
+        }
+    except Exception:
+        return {"total": 0, "open": 0, "assigned": 0, "closed": 0, "by_category": {}}
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _recent_tickets(limit: int = 10) -> list:
+    """获取最近工单"""
+    try:
+        es = _es()
+        r = es.search(
+            index="tickets",
+            body={
+                "size": limit,
+                "query": {"match_all": {}},
+                "sort": [{"created_date": {"order": "desc", "missing": "_last"}}],
+            },
+        )
+        return [h["_source"] for h in r["hits"]["hits"]]
+    except Exception:
+        return []
+
+
+_STATUS_MAP = {
+    "open": ("待处理", "open"),
+    "assigned": ("处理中", "assigned"),
+    "closed": ("已关闭", "closed"),
+}
+_URGENCY_MAP = {"高": "high", "中": "mid", "低": "low"}
 
 
 def render():
     st.markdown("## 📊 工单看板")
-    
-    # ===== 统计卡片 =====
+    st.markdown('<div class="page-subtitle">实时工单概览与处理进度</div>', unsafe_allow_html=True)
+
+    s = _stats()
+
+    # ===== 指标卡 =====
     c1, c2, c3, c4 = st.columns(4)
     cards = [
-        ("12", "今日新增", ""),
-        ("5", "待处理", "orange"),
-        ("4", "处理中", "blue"),
-        ("3", "已关闭", "green"),
+        (c1, "m-indigo", s["total"], "工单总量", "全部工单"),
+        (c2, "m-amber", s["open"], "待处理", "等待分配"),
+        (c3, "m-blue", s["assigned"], "处理中", "已派单"),
+        (c4, "m-emerald", s["closed"], "已关闭", "已解决"),
     ]
-    for col, (val, label, color) in zip([c1, c2, c3, c4], cards):
+    for col, cls, val, label, foot in cards:
         with col:
-            cls = f" {color}" if color else ""
-            st.markdown(f'<div class="metric-card{cls}"><div class="value">{val}</div><div class="label">{label}</div></div>', unsafe_allow_html=True)
-    
-    st.markdown("")  # 间距
-    
-    # ===== 工单列表 =====
-    st.markdown("### 最近工单")
-    
-    tickets = [
-        {"id": "GD202604240001", "type": "登录问题", "desc": "用户输入正确密码后仍提示认证失败", "urgency": "中", "status": "closed", "group": "IT支持组", "time": "09:30"},
-        {"id": "GD202604240002", "type": "系统故障", "desc": "服务器返回502错误，持续约30分钟", "urgency": "高", "status": "assigned", "group": "IT支持组", "time": "10:15"},
-        {"id": "GD202604240003", "type": "设备故障", "desc": "手环X1充满电后待机不到24小时自动关机", "urgency": "中", "status": "open", "group": None, "time": "11:00"},
-    ]
-    
-    status_map = {"open": ("待处理", "open"), "assigned": ("处理中", "assigned"), "closed": ("已关闭", "closed")}
-    urgency_map = {"高": "high", "中": "mid", "低": "low"}
-    
-    for t in tickets:
-        s_label, s_cls = status_map[t["status"]]
-        u_cls = urgency_map.get(t["urgency"], "mid")
-        
-        st.markdown(f"""
-        <div class="ticket-card">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div>
-                    <span style="font-weight:600; color:#333;">[{t['id']}]</span>
-                    <span style="margin-left:8px; color:#555;">{t['desc']}</span>
-                </div>
-                <div>
-                    <span class="tag tag-{s_cls}">{s_label}</span>
-                    <span class="tag tag-{u_cls}" style="margin-left:6px;">{t['urgency']}</span>
-                </div>
-            </div>
-            <div style="margin-top:8px; font-size:0.8rem; color:#999;">
-                {t['type']} · {t['group'] or '未分配'} · {t['time']}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # ===== 趋势图 =====
+            st.markdown(
+                f'<div class="metric-card {cls}">'
+                f'<div class="m-label">{label}</div>'
+                f'<div class="m-value">{val}</div>'
+                f'<div class="m-foot">{foot}</div></div>',
+                unsafe_allow_html=True,
+            )
+
     st.markdown("")
-    st.markdown("### 近 7 天趋势")
-    import pandas as pd
-    df = pd.DataFrame({
-        "日期": ["04-18","04-19","04-20","04-21","04-22","04-23","04-24"],
-        "新增": [8, 12, 6, 15, 10, 9, 12],
-        "关闭": [7, 10, 8, 12, 11, 8, 3],
-    })
-    st.bar_chart(df.set_index("日期"), color=["#667eea", "#38ef7d"], height=250)
+
+    left, right = st.columns([1.6, 1])
+
+    # ===== 最近工单 =====
+    with left:
+        st.markdown("### 最近工单")
+        tickets = _recent_tickets()
+        if not tickets:
+            st.info("暂无工单数据。可在「智能问答」中提交工单。")
+        for t in tickets:
+            status = t.get("status", "open")
+            s_label, s_cls = _STATUS_MAP.get(status, ("待处理", "open"))
+            urgency = t.get("urgency") or t.get("priority") or "中"
+            u_cls = _URGENCY_MAP.get(urgency, "mid")
+            group = t.get("assigned_to") or "未分配"
+            ptype = t.get("problem_type") or t.get("category") or "其他"
+            desc = (t.get("description") or "")[:60]
+
+            st.markdown(
+                f"""
+                <div class="card">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <span style="font-weight:700; color:#0f172a; font-size:0.9rem;">{t.get('ticket_id','')}</span>
+                            <span class="badge b-muted" style="margin-left:8px;">{ptype}</span>
+                        </div>
+                        <div>
+                            <span class="badge b-{s_cls}"><span class="dot"></span>{s_label}</span>
+                            <span class="badge b-{u_cls}" style="margin-left:6px;">{urgency}</span>
+                        </div>
+                    </div>
+                    <div class="kb-body">{desc}</div>
+                    <div class="kb-meta">处理组：{group}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    # ===== 分类分布 =====
+    with right:
+        st.markdown("### 问题类型分布")
+        if s["by_category"]:
+            import pandas as pd
+            df = pd.DataFrame(
+                {"类型": list(s["by_category"].keys()), "数量": list(s["by_category"].values())}
+            ).sort_values("数量", ascending=True)
+            st.bar_chart(df.set_index("类型"), height=300, color="#6366f1")
+        else:
+            st.info("暂无分类数据")
+
+        st.markdown("### 处理状态")
+        import pandas as pd
+        status_df = pd.DataFrame(
+            {
+                "状态": ["待处理", "处理中", "已关闭"],
+                "数量": [s["open"], s["assigned"], s["closed"]],
+            }
+        )
+        st.bar_chart(status_df.set_index("状态"), height=200, color=["#f59e0b", "#3b82f6", "#10b981"])
