@@ -1,0 +1,35 @@
+[
+  {
+    "ticket_id": "GD202604240001",
+    "product": "手环X1",
+    "problem_type": "设备故障",
+    "category": "续航问题",
+    "priority": "高",
+    "urgency": "高",
+    "description": "充满电后待机不到24小时自动关机",
+    "resolution": "校准电池并激活省电模式后恢复正常",
+    "status": "closed"
+  },
+  {
+    "ticket_id": "GD202604240002",
+    "product": "OA系统",
+    "problem_type": "登录问题",
+    "category": "登录问题",
+    "priority": "中",
+    "urgency": "中",
+    "description": "用户输入正确密码后仍提示认证失败，清除缓存后恢复",
+    "resolution": "清除浏览器缓存和Cookie后重新登录",
+    "status": "closed"
+  },
+  {
+    "ticket_id": "GD202604240003",
+    "product": "生产服务器A",
+    "problem_type": "系统故障",
+    "category": "系统故障",
+    "priority": "高",
+    "urgency": "高",
+    "description": "服务器返回502错误，持续约30分钟，影响全部API接口",
+    "resolution": "重启Nginx服务并扩容后端实例，问题恢复",
+    "status": "closed"
+  }
+]

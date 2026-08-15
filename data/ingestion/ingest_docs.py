@@ -1,10 +1,11 @@
 """
 Elasticsearch 知识库数据入库脚本
-负责：创建索引、导入历史工单/FAQ/知识条目
+负责：创建索引、导入历史工单/FAQ/知识条目、本地知识源管理
 """
 import os
 import sys
 import json
+import uuid
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -34,6 +35,9 @@ embedder = DashScopeEmbedding()
 # 索引配置
 VECTOR_DIMS = int(os.getenv("VECTOR_DIMS", "1024"))
 
+# 本地知识源目录（作为知识/FAQ/工单的"总的知识源"，扫描后入库 ES）
+KNOWLEDGE_DIR = ROOT_DIR / "data" / "knowledge"
+
 # ========== 索引 Mapping 定义 ==========
 
 TICKETS_MAPPING = {
@@ -41,8 +45,11 @@ TICKETS_MAPPING = {
         "properties": {
             "ticket_id": {"type": "keyword"},
             "product": {"type": "keyword"},
+            "problem_type": {"type": "keyword"},
             "category": {"type": "keyword"},
             "priority": {"type": "keyword"},
+            "urgency": {"type": "keyword"},
+            "assigned_to": {"type": "keyword"},
             "description": {
                 "type": "text",
                 "analyzer": "ik_max_word",
@@ -61,6 +68,7 @@ TICKETS_MAPPING = {
                 "similarity": "cosine",
             },
             "created_date": {"type": "date"},
+            "created_at": {"type": "date"},
             "updated_date": {"type": "date"},
         }
     }
@@ -143,136 +151,130 @@ def create_indices():
             logger.info(f"索引 {name} 已存在，跳过")
 
 
-def ingest_ticket(ticket_data: dict):
-    """导入单条工单到 ES"""
-    # 生成向量
-    text_for_vector = f"{ticket_data.get('description', '')} {ticket_data.get('resolution', '')}"
-    ticket_data["content_vector"] = embedder.embed_text(text_for_vector)
+def ingest_ticket(ticket_data: dict, content_vector: list = None) -> str:
+    """导入单条工单到 ES（content_vector 可复用已计算的向量，避免重复调用 Embedding）"""
+    if content_vector is None:
+        text_for_vector = f"{ticket_data.get('description') or ''} {ticket_data.get('resolution') or ''}"
+        content_vector = embedder.embed_text(text_for_vector)
+    ticket_data["content_vector"] = content_vector
     ticket_data.setdefault("created_date", datetime.now().isoformat())
     ticket_data.setdefault("status", "open")
 
-    doc_id = ticket_data.get("ticket_id", None)
+    doc_id = ticket_data.get("ticket_id")
     es.index(
         index="tickets",
         id=doc_id,
         document=ticket_data,
     )
     logger.info(f"工单 {doc_id} 导入成功")
+    return doc_id
 
 
-def ingest_knowledge(kb_data: dict):
-    """导入单条知识到 ES"""
-    text_for_vector = f"{kb_data.get('title', '')} {kb_data.get('content', '')} {kb_data.get('solution', '')}"
-    kb_data["content_vector"] = embedder.embed_text(text_for_vector)
+def ingest_knowledge(kb_data: dict, content_vector: list = None) -> str:
+    """导入单条知识到 ES（content_vector 可复用已计算的向量）"""
+    if content_vector is None:
+        text_for_vector = f"{kb_data.get('title') or ''} {kb_data.get('content') or ''} {kb_data.get('solution') or ''}"
+        content_vector = embedder.embed_text(text_for_vector)
+    kb_data["content_vector"] = content_vector
     kb_data.setdefault("create_date", datetime.now().isoformat())
     kb_data.setdefault("quality_score", 0.8)
 
-    doc_id = kb_data.get("kb_id", None)
+    doc_id = kb_data.get("kb_id")
     es.index(
         index="knowledge_base",
         id=doc_id,
         document=kb_data,
     )
     logger.info(f"知识条目 {doc_id} 导入成功")
+    return doc_id
 
 
-def ingest_faq(faq_data: dict):
-    """导入单条 FAQ 到 ES"""
-    text_for_vector = f"{faq_data.get('question', '')} {faq_data.get('answer', '')}"
-    faq_data["content_vector"] = embedder.embed_text(text_for_vector)
+def ingest_faq(faq_data: dict, content_vector: list = None) -> str:
+    """导入单条 FAQ 到 ES（content_vector 可复用已计算的向量）"""
+    if content_vector is None:
+        text_for_vector = f"{faq_data.get('question') or ''} {faq_data.get('answer') or ''}"
+        content_vector = embedder.embed_text(text_for_vector)
+    faq_data["content_vector"] = content_vector
 
-    doc_id = faq_data.get("faq_id", None)
+    doc_id = faq_data.get("faq_id")
     es.index(
         index="faq",
         id=doc_id,
         document=faq_data,
     )
     logger.info(f"FAQ {doc_id} 导入成功")
+    return doc_id
 
 
-def ingest_sample_data():
-    """导入示例数据（用于测试）"""
-    # 示例工单
-    sample_tickets = [
-        {
-            "ticket_id": "GD202604240001",
-            "product": "手环X1",
-            "category": "续航问题",
-            "priority": "高",
-            "description": "充满电后待机不到24小时自动关机",
-            "resolution": "校准电池并激活省电模式后恢复正常",
-            "status": "closed",
-        },
-        {
-            "ticket_id": "GD202604240002",
-            "product": "OA系统",
-            "category": "登录问题",
-            "priority": "中",
-            "description": "用户输入正确密码后仍提示认证失败，清除缓存后恢复",
-            "resolution": "清除浏览器缓存和Cookie后重新登录",
-            "status": "closed",
-        },
-        {
-            "ticket_id": "GD202604240003",
-            "product": "生产服务器A",
-            "category": "系统故障",
-            "priority": "高",
-            "description": "服务器返回502错误，持续约30分钟，影响全部API接口",
-            "resolution": "重启Nginx服务并扩容后端实例，问题恢复",
-            "status": "closed",
-        },
-    ]
+# ========== 本地知识源读写（总的知识源） ==========
 
-    # 示例知识
-    sample_knowledge = [
-        {
-            "kb_id": "KB001",
-            "title": "手环X1续航问题排查指南",
-            "content": "手环X1出现续航异常时，按以下步骤排查：1.检查固件版本 2.校准电池 3.激活省电模式",
-            "category": "设备故障",
-            "tags": ["手环", "续航", "电池"],
-            "solution": "校准电池并激活省电模式，如仍异常则返厂检测",
-        },
-        {
-            "kb_id": "KB002",
-            "title": "502错误通用排查方案",
-            "content": "502 Bad Gateway通常由后端服务不可用引起，排查步骤：1.检查后端服务状态 2.检查Nginx配置 3.检查网络连接",
-            "category": "系统故障",
-            "tags": ["502", "Nginx", "网关"],
-            "solution": "重启后端服务和Nginx，如频繁出现需考虑扩容",
-        },
-    ]
+def _read_source_file(filename: str) -> list:
+    """读取本地知识源 JSON 文件（不存在或解析失败返回空列表）"""
+    path = KNOWLEDGE_DIR / filename
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"读取本地知识源 {filename} 失败: {e}")
+        return []
 
-    # 示例 FAQ
-    sample_faq = [
-        {
-            "faq_id": "FAQ001",
-            "question": "忘记密码怎么办？",
-            "answer": "请点击登录页「忘记密码」链接，通过注册邮箱重置密码。如邮箱也无法访问，请联系IT支持。",
-            "category": "登录问题",
-            "tags": ["密码", "重置"],
-        },
-        {
-            "faq_id": "FAQ002",
-            "question": "如何申请退款？",
-            "answer": "请在订单详情页点击「申请退款」，填写退款原因后提交。财务组将在3个工作日内审核处理。",
-            "category": "财务问题",
-            "tags": ["退款", "订单"],
-        },
-    ]
 
-    logger.info("开始导入示例数据...")
-    for t in sample_tickets:
+def _append_source_file(filename: str, data: dict):
+    """追加一条记录到本地知识源 JSON 文件"""
+    KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
+    items = _read_source_file(filename)
+    items.append(data)
+    path = KNOWLEDGE_DIR / filename
+    path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def add_ticket(ticket_data: dict) -> str:
+    """新增工单：持久化到本地知识源 + 入库 ES"""
+    ticket_data.setdefault(
+        "ticket_id",
+        f"GD{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}",
+    )
+    _append_source_file("tickets.json", ticket_data)
+    return ingest_ticket(ticket_data)
+
+
+def add_knowledge(kb_data: dict) -> str:
+    """新增知识条目：持久化到本地知识源 + 入库 ES"""
+    kb_data.setdefault("kb_id", f"KB{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}")
+    _append_source_file("knowledge_base.json", kb_data)
+    return ingest_knowledge(kb_data)
+
+
+def add_faq(faq_data: dict) -> str:
+    """新增 FAQ：持久化到本地知识源 + 入库 ES"""
+    faq_data.setdefault("faq_id", f"FAQ{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}")
+    _append_source_file("faq.json", faq_data)
+    return ingest_faq(faq_data)
+
+
+def load_knowledge_source():
+    """扫描本地知识源目录，将工单/知识/FAQ 批量导入 ES"""
+    logger.info("开始扫描本地知识源目录...")
+
+    tickets = _read_source_file("tickets.json")
+    for t in tickets:
         ingest_ticket(t)
-    for k in sample_knowledge:
+
+    knowledge = _read_source_file("knowledge_base.json")
+    for k in knowledge:
         ingest_knowledge(k)
-    for f in sample_faq:
+
+    faqs = _read_source_file("faq.json")
+    for f in faqs:
         ingest_faq(f)
-    logger.info("示例数据导入完成")
+
+    logger.info(f"本地知识源导入完成: 工单 {len(tickets)} 条, 知识 {len(knowledge)} 条, FAQ {len(faqs)} 条")
 
 
 if __name__ == "__main__":
     logger.info("=== ES 知识库初始化 ===")
     create_indices()
-    ingest_sample_data()
+    load_knowledge_source()
     logger.info("=== 初始化完成 ===")
