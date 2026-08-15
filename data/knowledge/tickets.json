@@ -1,6 +1,28 @@
 [
   {
     "ticket_id": "GD202604240001",
+    "product": "OA系统",
+    "problem_type": "登录问题",
+    "category": "登录问题",
+    "priority": "中",
+    "urgency": "中",
+    "description": "用户输入正确账号密码后OA系统仍提示认证失败",
+    "resolution": "清除浏览器缓存和Cookie后重新登录，恢复账号访问",
+    "status": "closed"
+  },
+  {
+    "ticket_id": "GD202604240002",
+    "product": "生产服务器A",
+    "problem_type": "系统故障",
+    "category": "系统故障",
+    "priority": "高",
+    "urgency": "高",
+    "description": "服务器返回502错误，持续约30分钟，影响全部API接口",
+    "resolution": "重启Nginx服务并扩容后端实例，问题恢复",
+    "status": "closed"
+  },
+  {
+    "ticket_id": "GD202604240003",
     "product": "手环X1",
     "problem_type": "设备故障",
     "category": "续航问题",
@@ -11,25 +33,58 @@
     "status": "closed"
   },
   {
-    "ticket_id": "GD202604240002",
-    "product": "OA系统",
+    "ticket_id": "GD202604250001",
+    "product": "企业邮箱",
     "problem_type": "登录问题",
     "category": "登录问题",
     "priority": "中",
     "urgency": "中",
-    "description": "用户输入正确密码后仍提示认证失败，清除缓存后恢复",
-    "resolution": "清除浏览器缓存和Cookie后重新登录",
+    "description": "员工忘记邮箱密码且备用邮箱无法访问",
+    "resolution": "IT核验工号后手动重置密码",
     "status": "closed"
   },
   {
-    "ticket_id": "GD202604240003",
-    "product": "生产服务器A",
+    "ticket_id": "GD202604250002",
+    "product": "办公网络",
+    "problem_type": "网络异常",
+    "category": "网络异常",
+    "priority": "中",
+    "urgency": "中",
+    "description": "办公区WiFi频繁掉线，多个同事受影响",
+    "resolution": "IT优化AP信道并加装AP后信号稳定",
+    "status": "closed"
+  },
+  {
+    "ticket_id": "GD202604250003",
+    "product": "财务系统",
+    "problem_type": "财务问题",
+    "category": "财务问题",
+    "priority": "中",
+    "urgency": "中",
+    "description": "用户申请退款后超过7个工作日仍未到账",
+    "resolution": "财务组核查后确认银行处理延迟，款项已原路退回",
+    "status": "closed"
+  },
+  {
+    "ticket_id": "GD202604260001",
+    "product": "打印机HP-204",
+    "problem_type": "设备故障",
+    "category": "设备故障",
+    "priority": "低",
+    "urgency": "低",
+    "description": "打印机显示离线无法打印，打印队列堵塞",
+    "resolution": "清空打印队列并重装驱动后恢复",
+    "status": "closed"
+  },
+  {
+    "ticket_id": "GD202604260002",
+    "product": "订单系统",
     "problem_type": "系统故障",
     "category": "系统故障",
     "priority": "高",
     "urgency": "高",
-    "description": "服务器返回502错误，持续约30分钟，影响全部API接口",
-    "resolution": "重启Nginx服务并扩容后端实例，问题恢复",
+    "description": "订单接口响应超时，数据库连接池耗尽",
+    "resolution": "定位慢SQL并优化索引，调大连接池上限后恢复",
     "status": "closed"
   }
 ]
