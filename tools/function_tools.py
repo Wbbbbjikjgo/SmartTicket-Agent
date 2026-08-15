@@ -94,7 +94,7 @@ TOOLS_DEFINITION = [
                 "properties": {
                     "ticket_id": {
                         "type": "string",
-                        "description": "工单编号",
+                        "description": "工单编号（如 GD202604240001）。若刚在本轮对话中创建了工单，可不传，系统将自动选择最近创建的工单。",
                     },
                     "skill_group": {
                         "type": "string",
@@ -106,7 +106,7 @@ TOOLS_DEFINITION = [
                         "description": "派单理由",
                     },
                 },
-                "required": ["ticket_id", "skill_group"],
+                "required": ["skill_group"],
             },
         },
     },
@@ -163,10 +163,11 @@ class TicketTools:
         }
         self._tickets[ticket_id] = ticket
 
-        # 写入 ES（如果可用）
+        # 写入 ES（如果可用，向量化入库）
         if self.es:
             try:
-                self.es.index(index="tickets", id=ticket_id, document=ticket)
+                from data.ingestion.ingest_docs import ingest_ticket
+                ingest_ticket(ticket)
             except Exception as e:
                 logger.warning(f"写入 ES 失败: {e}")
 
@@ -226,8 +227,16 @@ class TicketTools:
         else:
             return {"success": False, "message": "检索服务未初始化"}
 
-    def assign_engineer(self, ticket_id: str, skill_group: str, reason: str = None) -> dict:
-        """派单给工程师"""
+    def assign_engineer(self, ticket_id: str = None, skill_group: str = None, reason: str = None) -> dict:
+        """派单给工程师（ticket_id 缺省时自动选择最近创建的工单）"""
+        # 未提供工单号时，自动取最近创建的工单
+        if not ticket_id and self._tickets:
+            ticket_id = sorted(self._tickets.keys())[-1]
+        if not ticket_id:
+            return {"success": False, "message": "未提供工单号，且当前会话中无可用工单"}
+        if not skill_group:
+            return {"success": False, "message": "未提供目标技能组"}
+
         ticket = self._tickets.get(ticket_id)
         if not ticket and self.es:
             try:
