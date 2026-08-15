@@ -3,8 +3,11 @@ MCP Server 封装
 将工单系统 API 封装为 MCP (Model Context Protocol) 服务
 供 Agent 通过 MCP 协议统一调用
 """
+import os
+import sys
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -49,12 +52,26 @@ class MCPTicketServer:
 # ========== 独立运行 MCP Server（stdio 模式） ==========
 
 if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, ".")
+    # 确保项目根目录在 path 中
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+
+    from elasticsearch import Elasticsearch
     from tools.function_tools import TicketTools, TOOLS_DEFINITION
 
-    tools = TicketTools()
+    # 初始化 ES 客户端与检索管道，使工具可真正查询/检索
+    es_client = Elasticsearch(os.getenv("ES_HOST", "http://localhost:9200"))
+
+    search_pipeline = None
+    try:
+        from retrieval.hybrid_search import HybridSearchPipeline
+        search_pipeline = HybridSearchPipeline()
+    except Exception as e:
+        logger.warning(f"检索管道初始化失败，search_knowledge 将不可用: {e}")
+
+    tools = TicketTools(es_client=es_client, search_pipeline=search_pipeline)
     server = MCPTicketServer(tools)
 
     # stdio 模式：从 stdin 读取 JSON-RPC 请求
