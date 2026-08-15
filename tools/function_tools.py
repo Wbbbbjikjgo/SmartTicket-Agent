@@ -209,23 +209,33 @@ class TicketTools:
 
     def search_knowledge(self, query: str, category: str = None) -> dict:
         """检索知识库"""
-        if self.search_pipeline:
-            results = self.search_pipeline.search(query, top_k=5)
-            return {
-                "success": True,
-                "query": query,
-                "results": [
-                    {
-                        "title": r.get("source", {}).get("title", ""),
-                        "content": r.get("content", ""),
-                        "score": r.get("rerank_score", r.get("score", 0)),
-                        "category": r.get("source", {}).get("category", ""),
-                    }
-                    for r in results
-                ],
-            }
-        else:
+        if not self.search_pipeline:
             return {"success": False, "message": "检索服务未初始化"}
+
+        results = self.search_pipeline.search(query, top_k=5)
+        return {
+            "success": True,
+            "query": query,
+            "results": [
+                {
+                    "title": self._extract_title(r.get("source", {}), r.get("content", "")),
+                    "content": r.get("content", ""),
+                    "solution": r.get("source", {}).get("solution", "") or r.get("source", {}).get("answer", ""),
+                    "score": r.get("rerank_score", r.get("score", 0)),
+                    "category": r.get("source", {}).get("category", ""),
+                    "index": r.get("index", ""),
+                }
+                for r in results
+            ],
+        }
+
+    @staticmethod
+    def _extract_title(source: dict, content: str) -> str:
+        """从不同来源的文档中提取标题（知识用 title、FAQ 用 question、工单用 description）"""
+        for field in ("title", "question", "description"):
+            if source.get(field):
+                return source[field]
+        return (content or "")[:40]
 
     def assign_engineer(self, ticket_id: str = None, skill_group: str = None, reason: str = None) -> dict:
         """派单给工程师（ticket_id 缺省时自动选择最近创建的工单）"""
