@@ -7,8 +7,8 @@ langchain-mcp-adapters>=0.0.1
 # 阿里云 DashScope（Embedding + Rerank）
 dashscope>=1.20.0
 
-# 搜索引擎
-elasticsearch>=8.11.0
+# 搜索引擎（ES 8.x 客户端；9.x 客户端与 ES 8.11 服务端不兼容，必须锁 <9.0.0）
+elasticsearch>=8.11.0,<9.0.0
 
 # 消息队列
 kafka-python>=2.0.2

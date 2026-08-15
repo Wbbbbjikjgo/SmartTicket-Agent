@@ -7,7 +7,7 @@ import json
 import logging
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
@@ -62,56 +62,53 @@ class TicketAgent:
         messages.append(HumanMessage(content=user_input))
 
         try:
-            # 调用 LLM（带工具）
-            response = self.llm.bind_tools(self.tools_def).invoke(messages)
+            tool_results = []
+            # 循环调用：LLM 可能连续多轮调用工具（最多 3 轮）
+            for _ in range(3):
+                response = self.llm.bind_tools(self.tools_def).invoke(messages)
+                messages.append(response)
 
-            # 检查是否有工具调用
-            if response.tool_calls:
-                tool_results = []
+                # 无工具调用，视为最终回复
+                if not response.tool_calls:
+                    break
+
+                # 逐条执行工具，并用 ToolMessage 回填（必须携带 tool_call_id）
                 for tc in response.tool_calls:
                     tool_name = tc["name"]
-                    tool_args = tc["args"]
+                    tool_args = tc.get("args", {})
                     logger.info(f"FunctionCall: {tool_name}({tool_args})")
 
-                    # 执行工具
                     result = self.ticket_tools.execute_tool(tool_name, tool_args)
                     tool_results.append({
                         "tool": tool_name,
                         "args": tool_args,
                         "result": result,
                     })
-
-                # 将工具结果反馈给 LLM 生成最终回复
-                messages.append(response)
-                for tr in tool_results:
-                    messages.append(HumanMessage(
-                        content=f"工具 {tr['tool']} 执行结果：{json.dumps(tr['result'], ensure_ascii=False)}"
+                    messages.append(ToolMessage(
+                        content=json.dumps(result, ensure_ascii=False),
+                        tool_call_id=tc["id"],
                     ))
-                final_response = self.llm.invoke(messages)
 
-                # 提取工单ID
-                ticket_id = None
-                for tr in tool_results:
-                    if tr["result"].get("ticket_id"):
-                        ticket_id = tr["result"]["ticket_id"]
+            final_text = response.content or "已为您处理完成。"
+            if not response.tool_calls and not response.content:
+                final_text = "已为您处理完成。"
 
-                return {
-                    "response": final_response.content,
-                    "tool_calls": tool_results,
-                    "ticket_id": ticket_id,
-                }
-            else:
-                # 无工具调用，直接回复
-                return {
-                    "response": response.content,
-                    "tool_calls": [],
-                    "ticket_id": None,
-                }
+            # 提取工单ID
+            ticket_id = None
+            for tr in tool_results:
+                if isinstance(tr.get("result"), dict) and tr["result"].get("ticket_id"):
+                    ticket_id = tr["result"]["ticket_id"]
+
+            return {
+                "response": final_text,
+                "tool_calls": tool_results,
+                "ticket_id": ticket_id,
+            }
 
         except Exception as e:
             logger.error(f"TicketAgent 处理失败: {e}")
             return {
-                "response": f"抱歉，处理您的请求时出现错误：{e}。请稍后重试。",
+                "response": f"抱歉，处理您的请求时出现错误，请稍后重试。",
                 "tool_calls": [],
                 "ticket_id": None,
             }

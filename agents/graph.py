@@ -153,14 +153,15 @@ class MultiAgentOrchestrator:
     def _search_knowledge_node(self, state: AgentState) -> dict:
         """知识检索节点"""
         result = self.ticket_tools.search_knowledge(state["user_input"])
-        if result.get("success"):
+        results = result.get("results", []) if isinstance(result, dict) else []
+        if result.get("success") and results:
             results_text = "\n".join(
                 f"- [{r['title']}] {r['content'][:100]}"
-                for r in result.get("results", [])[:5]
+                for r in results[:5]
             )
             response = f"为您找到以下相关知识：\n{results_text}"
         else:
-            response = "抱歉，未找到相关知识。"
+            response = "抱歉，未找到相关知识。您可以换个关键词，或直接描述问题，我为您创建工单由工程师解答。"
         return {
             "response": response,
             "step": "search_knowledge",
@@ -207,10 +208,15 @@ class MultiAgentOrchestrator:
         ticket_id = state.get("ticket_id", "")
         assign_result = state.get("assign_result", {})
 
-        if intent == "create_ticket" and ticket_id:
+        if intent == "assign":
+            response = (
+                "已为您转接专业工程师，请稍候，工程师将尽快与您联系。\n\n"
+                "如问题紧急，也可以直接拨打 IT 值班热线。"
+            )
+        elif intent == "create_ticket" and ticket_id:
             group = assign_result.get("skill_group", "未分配")
             response = (
-                f"✅ 工单已创建成功！\n"
+                f"工单已创建成功！\n\n"
                 f"工单号：{ticket_id}\n"
                 f"已派发给：{group}\n"
                 f"我们会尽快处理您的问题。"
