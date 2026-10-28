@@ -213,7 +213,11 @@ class TicketTools:
                 {
                     "title": self._extract_title(r.get("source", {}), r.get("content", "")),
                     "content": r.get("content", ""),
-                    "solution": r.get("source", {}).get("solution", "") or r.get("source", {}).get("answer", ""),
+                    "solution": (
+                        r.get("source", {}).get("solution", "")
+                        or r.get("source", {}).get("answer", "")
+                        or r.get("source", {}).get("resolution", "")
+                    ),
                     "score": r.get("rerank_score", r.get("score", 0)),
                     "category": r.get("source", {}).get("category", ""),
                     "index": r.get("index", ""),

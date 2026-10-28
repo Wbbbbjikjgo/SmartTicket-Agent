@@ -169,7 +169,7 @@ def _search(query: str) -> list:
         out.append({
             "title": _title_of(src, r.get("content", "")),
             "content": r.get("content", ""),
-            "solution": src.get("solution", "") or src.get("answer", ""),
+            "solution": src.get("solution", "") or src.get("answer", "") or src.get("resolution", ""),
             "category": src.get("category", ""),
             "tags": src.get("tags", []),
             "score": r.get("rerank_score", r.get("score", 0)),
