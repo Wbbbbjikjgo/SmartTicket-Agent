@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 from preprocess.nlp_classifier import RuleEngine
+from data.ingestion.ticket_service import SKILL_GROUPS
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,9 @@ ASSIGN_PROMPT = """你是智能派单专家。请根据工单信息，决定将�
 
 
 class AssignAgent:
-    """智能派单 Agent"""
+    """智能派单 Agent：规则/LLM 决策 → ES 更新「已委派」→ Kafka 推送部门"""
 
-    SKILL_GROUPS = ["IT支持组", "维修工程师", "财务组", "客服组"]
+    SKILL_GROUPS = SKILL_GROUPS
 
     def __init__(self, ticket_tools=None):
         self.ticket_tools = ticket_tools
@@ -54,8 +55,12 @@ class AssignAgent:
 
     def assign(self, ticket: dict) -> dict:
         """
-        派单决策
-        返回: {"skill_group": str, "priority": str, "reason": str, "assigned": bool}
+        派单决策并执行：
+        1. 规则引擎优先，LLM 兜底
+        2. 更新 ES 状态为「已委派」
+        3. Kafka 生产者推送到对应部门后台
+
+        返回: {"skill_group", "priority", "reason", "assigned", "status", "kafka_pushed"}
         """
         # Step 1: 规则引擎匹配（复用 nlp_classifier.RuleEngine）
         raw_text = " ".join(filter(None, [
@@ -76,17 +81,34 @@ class AssignAgent:
             # Step 2: LLM 决策（兜底）
             result = self._llm_assign(ticket)
 
-        # Step 3: 执行派单
+        # Step 3: 执行派单（ES 更新 + Kafka 推送部门）
         ticket_id = ticket.get("ticket_id")
-        if ticket_id and self.ticket_tools and result.get("assigned"):
-            assign_result = self.ticket_tools.assign_engineer(
-                ticket_id=ticket_id,
-                skill_group=result["skill_group"],
-                reason=result["reason"],
-            )
-            result["assign_result"] = assign_result
+        if ticket_id and result.get("assigned"):
+            try:
+                if self.ticket_tools:
+                    assign_result = self.ticket_tools.assign_engineer(
+                        ticket_id=ticket_id,
+                        skill_group=result["skill_group"],
+                        reason=result["reason"],
+                    )
+                else:
+                    from data.ingestion.ticket_service import assign_ticket
+                    assign_result = assign_ticket(
+                        ticket_id=ticket_id,
+                        skill_group=result["skill_group"],
+                        reason=result["reason"],
+                    )
+                result["assign_result"] = assign_result
+                result["status"] = assign_result.get("status")
+                result["kafka_pushed"] = assign_result.get("kafka_pushed", False)
+            except Exception as e:
+                logger.error(f"派单执行失败: {e}")
+                result["assign_result"] = {"success": False, "message": str(e)}
 
-        logger.info(f"派单决策: {ticket_id} → {result['skill_group']}")
+        logger.info(
+            f"派单决策: {ticket_id} → {result['skill_group']} "
+            f"(Kafka: {'成功' if result.get('kafka_pushed') else '未推送'})"
+        )
         return result
 
     def _llm_assign(self, ticket: dict) -> dict:
