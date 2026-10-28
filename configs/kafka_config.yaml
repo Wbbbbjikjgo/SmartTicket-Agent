@@ -9,9 +9,6 @@ kafka:
 
   # -------- 主题定义 --------
   topics:
-    # 原始工单：用户刚提交未经任何处理的工单（审计/重放）
-    raw: ${KAFKA_TOPIC_RAW:-ticket-raw}
-
     # 部门 Topic：派单后按技能组推送到对应部门后台
     dept_it: ${KAFKA_TOPIC_DEPT_IT:-ticket-dept-it}
     dept_maintenance: ${KAFKA_TOPIC_DEPT_MAINTENANCE:-ticket-dept-maintenance}

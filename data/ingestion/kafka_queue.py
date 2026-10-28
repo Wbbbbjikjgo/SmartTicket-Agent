@@ -18,7 +18,6 @@ from kafka.errors import KafkaError
 logger = logging.getLogger(__name__)
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
-TOPIC_RAW = os.getenv("KAFKA_TOPIC_RAW", "ticket-raw")
 TOPIC_RESOLVED = os.getenv("KAFKA_TOPIC_RESOLVED", "ticket-resolved")
 WORKER_GROUP = os.getenv("KAFKA_WORKER_GROUP", "ticket-resolution-worker")
 
@@ -30,7 +29,7 @@ def _department_topics() -> list:
 
 
 def _all_topics() -> list:
-    return [TOPIC_RAW, TOPIC_RESOLVED] + _department_topics()
+    return [TOPIC_RESOLVED] + _department_topics()
 
 
 def _ensure_topics():
@@ -91,11 +90,6 @@ class TicketProducer:
         except Exception as e:
             logger.error(f"Kafka 消息发送失败 [{topic}]: {e}")
             return False
-
-    def send_ticket(self, ticket_data: dict) -> bool:
-        """原始工单事件（审计/重放）"""
-        ticket_data.setdefault("submit_time", datetime.now().isoformat())
-        return self._send(TOPIC_RAW, ticket_data)
 
     def send_to_department(self, ticket_data: dict, skill_group: str) -> bool:
         """派单后推送到部门后台"""
@@ -201,7 +195,7 @@ def _handle_event(topic: str, payload: dict):
         mark_assigned_from_event(payload)
 
 
-def run_worker(group_id: str = WORKER_GROUP, stop_event: threading.Event = None):
+def run_worker(group_id: str = WORKER_GROUP):
     """
     启动后台消费者 worker
     订阅：所有部门 Topic + ticket-resolved
@@ -209,22 +203,7 @@ def run_worker(group_id: str = WORKER_GROUP, stop_event: threading.Event = None)
     _ensure_topics()
     topics = _department_topics() + [TOPIC_RESOLVED]
     consumer = TicketConsumer(topics, group_id=group_id)
-
-    if stop_event is None:
-        # 独立进程模式：阻塞消费
-        consumer.consume(_handle_event)
-        return
-
-    # 后台线程模式：可停止
-    logger.info("Kafka 后台 worker 已启动（线程模式）")
-    while not stop_event.is_set():
-        for topic, payload in consumer.poll(timeout_ms=1000):
-            try:
-                _handle_event(topic, payload)
-            except Exception as e:
-                logger.error(f"Kafka 后台处理失败: {e}")
-    consumer.close()
-    logger.info("Kafka 后台 worker 已停止")
+    consumer.consume(_handle_event)
 
 
 def start_resolution_worker(group_id: str = None) -> threading.Thread:
