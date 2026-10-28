@@ -37,15 +37,17 @@ class VectorRetriever:
 
         for idx in search_indices:
             try:
-                body = {
-                    "knn": {
-                        "field": "content_vector",
-                        "query_vector": query_vec,
-                        "k": size,
-                        "num_candidates": size * 4,
-                    },
-                    "_source": True,
+                knn = {
+                    "field": "content_vector",
+                    "query_vector": query_vec,
+                    "k": size,
+                    "num_candidates": size * 4,
                 }
+                if idx == "tickets":
+                    # 只检索已解决工单（未解决工单没有向量/答案）
+                    knn["filter"] = {"terms": {"status": ["已解决", "resolved", "closed"]}}
+
+                body = {"knn": knn, "_source": True}
                 resp = self.es.search(index=idx, body=body)
 
                 for hit in resp["hits"]["hits"]:
@@ -64,7 +66,7 @@ class VectorRetriever:
 
     def _extract_content(self, source: dict) -> str:
         """从文档中提取主要文本内容"""
-        for field in ["content", "description", "question", "title"]:
+        for field in ["content", "description", "question", "title", "resolution", "solution"]:
             if field in source and source[field]:
                 return source[field]
         return ""

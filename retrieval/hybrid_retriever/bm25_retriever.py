@@ -28,17 +28,29 @@ class BM25Retriever:
 
         for idx in search_indices:
             try:
-                body = {
-                    "query": {
-                        "multi_match": {
-                            "query": query,
-                            "fields": ["description", "content", "title", "question", "resolution", "solution"],
-                            "type": "best_fields",
-                            "analyzer": "ik_smart",
-                        }
-                    },
-                    "size": size,
+                match_query = {
+                    "multi_match": {
+                        "query": query,
+                        "fields": [
+                            "description", "content", "keywords", "title",
+                            "question", "resolution", "solution",
+                        ],
+                        "type": "best_fields",
+                        "analyzer": "ik_smart",
+                    }
                 }
+                if idx == "tickets":
+                    # 工单只有已解决（有答案）才允许进入知识检索
+                    query_body = {
+                        "bool": {
+                            "must": [match_query],
+                            "filter": [{"terms": {"status": ["已解决", "resolved", "closed"]}}],
+                        }
+                    }
+                else:
+                    query_body = match_query
+
+                body = {"query": query_body, "size": size}
                 resp = self.es.search(index=idx, body=body)
 
                 for hit in resp["hits"]["hits"]:
@@ -58,7 +70,7 @@ class BM25Retriever:
 
     def _extract_content(self, source: dict) -> str:
         """从文档中提取主要文本内容"""
-        for field in ["content", "description", "question", "title"]:
+        for field in ["content", "description", "question", "title", "resolution", "solution"]:
             if field in source and source[field]:
                 return source[field]
         return ""
