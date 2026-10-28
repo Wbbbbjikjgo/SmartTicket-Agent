@@ -24,8 +24,5 @@ RUN pip install --no-cache-dir --default-timeout=300 -r requirements.txt
 # 复制项目代码
 COPY . .
 
-# 暴露端口
-EXPOSE 8000
-
-# 启动命令（可根据实际需求调整）
-CMD ["python", "-c", "print('Agent Service Ready'); import time; time.sleep(999999)"]
+# 启动 Kafka 后台消费者（部门工单确认 + 解决事件沉淀）
+CMD ["python", "data/ingestion/kafka_queue.py"]

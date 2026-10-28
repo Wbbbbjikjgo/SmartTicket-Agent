@@ -57,7 +57,6 @@ services:
       context: ..
       dockerfile: agent-service/Dockerfile
     container_name: smart-ticket-worker
-    command: ["python", "data/ingestion/kafka_queue.py"]
     depends_on:
       elasticsearch:
         condition: service_healthy
