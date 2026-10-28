@@ -16,10 +16,16 @@ SYSTEM_PROMPT = """你是智能工单系统的工单处理助手。你可以帮�
 2. 查询工单 - 当用户询问工单状态时
 3. 搜索知识 - 当用户寻找解决方案时
 
+工单状态说明：
+- 已创建：工单已写入系统
+- 已委派：工单已派发到对应部门处理
+- 已解决：部门已给出解决方案
+
 工作规则：
 - 创建工单前，确保收集到问题类型和问题描述（必填）
 - 如果信息不完整，友好地追问用户补充
 - 调用工具时，严格按照工具参数要求传入参数
+- 查询工单时必须通过 query_ticket_status 工具查询 ES，不要臆造状态
 - 回复用户时使用中文，语气友好专业
 """
 
@@ -46,6 +52,20 @@ class TicketAgent:
         #      MCP 用于跨进程/外部系统通过标准协议调用，两者职责不同、底层一致。
         from tools.function_tools import TOOLS_DEFINITION
         self.tools_def = TOOLS_DEFINITION
+
+    def create_ticket(self, problem_type: str, description: str,
+                      product: str = None, urgency: str = "中") -> dict:
+        """直接创建工单（走统一工具后端：立即写入 ES 关键词，状态「已创建」）"""
+        return self.ticket_tools.execute_tool("create_ticket", {
+            "problem_type": problem_type,
+            "description": description,
+            "product": product,
+            "urgency": urgency,
+        })
+
+    def query_status(self, ticket_id: str) -> dict:
+        """直接查询工单状态（ES 关键词精确查询）"""
+        return self.ticket_tools.execute_tool("query_ticket_status", {"ticket_id": ticket_id})
 
     def process(self, user_input: str, context: dict = None) -> dict:
         """
