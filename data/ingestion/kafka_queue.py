@@ -1,13 +1,16 @@
 """
 Kafka 工单消息队列
-负责：工单缓冲削峰、异步处理、规则路由分发
+
+职责：
+- 生产者：把派单后的工单推送到对应部门 Topic；把已解决工单推送到 solution Topic
+- 消费者：部门 Topic 确认工单进入后台；solution Topic 触发向量与知识库沉淀
 """
 import os
 import json
 import logging
-import uuid
+import threading
 from datetime import datetime
-from typing import Optional, Callable
+from typing import Callable
 
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import KafkaError
@@ -16,193 +19,240 @@ logger = logging.getLogger(__name__)
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 TOPIC_RAW = os.getenv("KAFKA_TOPIC_RAW", "ticket-raw")
-TOPIC_ROUTED = os.getenv("KAFKA_TOPIC_ROUTED", "ticket-routed")
+TOPIC_RESOLVED = os.getenv("KAFKA_TOPIC_RESOLVED", "ticket-resolved")
+WORKER_GROUP = os.getenv("KAFKA_WORKER_GROUP", "ticket-resolution-worker")
+
+
+def _department_topics() -> list:
+    """获取所有部门 Topic（延迟导入，避免循环依赖）"""
+    from data.ingestion.ticket_service import SKILL_GROUP_TOPICS
+    return list(SKILL_GROUP_TOPICS.values())
+
+
+def _all_topics() -> list:
+    return [TOPIC_RAW, TOPIC_RESOLVED] + _department_topics()
+
+
+def _ensure_topics():
+    """确保所需 Topic 已创建（Kafka 自动建 Topic 关闭时也能工作）"""
+    try:
+        from kafka.admin import KafkaAdminClient, NewTopic
+
+        admin = KafkaAdminClient(bootstrap_servers=KAFKA_BOOTSTRAP, client_id="smart-ticket-admin")
+        existing = set(admin.list_topics())
+        missing = [
+            NewTopic(name=name, num_partitions=1, replication_factor=1)
+            for name in _all_topics() if name not in existing
+        ]
+        if missing:
+            admin.create_topics(missing)
+            logger.info(f"Kafka Topic 已创建: {[t.name for t in missing]}")
+        admin.close()
+    except Exception as e:
+        logger.warning(f"Kafka Topic 初始化失败（可能已存在或 Broker 未启动）: {e}")
 
 
 class TicketProducer:
-    """工单生产者：将工单发送到 Kafka"""
+    """工单生产者：派单 → 部门 Topic；解决 → 解决 Topic"""
 
     def __init__(self):
+        self.producer = None
         try:
             self.producer = KafkaProducer(
                 bootstrap_servers=KAFKA_BOOTSTRAP,
-                value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
+                value_serializer=lambda v: json.dumps(v, ensure_ascii=False, default=str).encode("utf-8"),
                 acks="all",
                 retries=3,
+                linger_ms=10,
             )
+            _ensure_topics()
             logger.info(f"Kafka Producer 初始化成功，连接: {KAFKA_BOOTSTRAP}")
         except KafkaError as e:
             logger.error(f"Kafka Producer 初始化失败: {e}")
             self.producer = None
+        except Exception as e:
+            logger.error(f"Kafka Producer 初始化异常: {e}")
+            self.producer = None
+
+    @property
+    def available(self) -> bool:
+        return self.producer is not None
+
+    def _send(self, topic: str, payload: dict) -> bool:
+        if not self.available:
+            logger.warning(f"Producer 不可用，消息未发送: {topic}")
+            return False
+        try:
+            payload.setdefault("event_time", datetime.now().isoformat())
+            future = self.producer.send(topic, value=payload)
+            future.get(timeout=10)
+            logger.info(f"消息已发送到 {topic}: {payload.get('ticket_id', 'unknown')}")
+            return True
+        except Exception as e:
+            logger.error(f"Kafka 消息发送失败 [{topic}]: {e}")
+            return False
 
     def send_ticket(self, ticket_data: dict) -> bool:
-        """发送工单到 ticket-raw topic"""
-        if not self.producer:
-            logger.error("Producer 未初始化，无法发送")
-            return False
-
-        # 添加工单元信息
-        ticket_data.setdefault("ticket_id", f"GD{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}")
+        """原始工单事件（审计/重放）"""
         ticket_data.setdefault("submit_time", datetime.now().isoformat())
+        return self._send(TOPIC_RAW, ticket_data)
 
-        try:
-            future = self.producer.send(TOPIC_RAW, value=ticket_data)
-            future.get(timeout=10)  # 等待发送确认
-            logger.info(f"工单 {ticket_data['ticket_id']} 已发送到 {TOPIC_RAW}")
-            return True
-        except KafkaError as e:
-            logger.error(f"工单发送失败: {e}")
-            return False
+    def send_to_department(self, ticket_data: dict, skill_group: str) -> bool:
+        """派单后推送到部门后台"""
+        from data.ingestion.ticket_service import topic_for_group, STATUS_ASSIGNED
+
+        payload = dict(ticket_data)
+        payload["skill_group"] = skill_group
+        payload["status"] = STATUS_ASSIGNED
+        return self._send(topic_for_group(skill_group), payload)
+
+    def send_resolution(self, ticket_data: dict) -> bool:
+        """解决事件，由消费者沉淀向量与知识"""
+        return self._send(TOPIC_RESOLVED, dict(ticket_data))
 
     def close(self):
         if self.producer:
-            self.producer.flush()
-            self.producer.close()
+            try:
+                self.producer.flush()
+                self.producer.close()
+            except Exception:
+                pass
 
 
 class TicketConsumer:
-    """工单消费者：从 Kafka 拉取工单并处理"""
+    """通用消费者：订阅多个 Topic"""
 
-    def __init__(self, group_id: str = "ticket-agent"):
+    def __init__(self, topics: list, group_id: str = WORKER_GROUP):
+        self.topics = topics
         self.group_id = group_id
         self.consumer = None
-        self._init_consumer()
-
-    def _init_consumer(self):
-        """初始化消费者"""
         try:
             self.consumer = KafkaConsumer(
-                TOPIC_RAW,
+                *topics,
                 bootstrap_servers=KAFKA_BOOTSTRAP,
-                group_id=self.group_id,
+                group_id=group_id,
                 auto_offset_reset="earliest",
                 enable_auto_commit=True,
                 value_deserializer=lambda m: json.loads(m.decode("utf-8")),
             )
-            logger.info(f"Kafka Consumer 初始化成功，group: {self.group_id}")
-        except KafkaError as e:
+            logger.info(f"Kafka Consumer 初始化成功，group={group_id}, topics={topics}")
+        except Exception as e:
             logger.error(f"Kafka Consumer 初始化失败: {e}")
+            self.consumer = None
 
-    def consume(self, handler: Callable[[dict], None], max_messages: int = None):
-        """
-        消费工单消息
-        handler: 处理函数，接收工单 dict
-        max_messages: 最大消费数量（None 表示持续消费）
-        """
-        if not self.consumer:
-            logger.error("Consumer 未初始化")
+    @property
+    def available(self) -> bool:
+        return self.consumer is not None
+
+    def poll(self, timeout_ms: int = 1000, max_records: int = 50) -> list:
+        """非阻塞拉取一批消息，返回 [(topic, payload), ...]"""
+        if not self.available:
+            return []
+        events = []
+        try:
+            records = self.consumer.poll(timeout_ms=timeout_ms, max_records=max_records)
+            for tp, messages in records.items():
+                for msg in messages:
+                    events.append((tp.topic, msg.value))
+        except Exception as e:
+            logger.error(f"Kafka 拉取消息失败: {e}")
+        return events
+
+    def consume(self, handler: Callable[[str, dict], None], max_messages: int = None):
+        """持续消费"""
+        if not self.available:
+            logger.error("Consumer 未初始化，worker 退出")
             return
 
         count = 0
-        for message in self.consumer:
-            try:
-                ticket = message.value
-                logger.info(f"消费工单: {ticket.get('ticket_id', 'unknown')}")
-                handler(ticket)
-                count += 1
-                if max_messages and count >= max_messages:
-                    break
-            except Exception as e:
-                logger.error(f"处理工单异常: {e}")
-                continue
+        try:
+            for message in self.consumer:
+                try:
+                    handler(message.topic, message.value)
+                    count += 1
+                    if max_messages and count >= max_messages:
+                        break
+                except Exception as e:
+                    logger.error(f"处理 Kafka 消息异常: {e}")
+        except KeyboardInterrupt:
+            logger.info("收到中断信号，停止消费")
+        finally:
+            self.close()
 
     def close(self):
         if self.consumer:
-            self.consumer.close()
-
-
-class TicketRouter:
-    """
-    工单路由器：结合规则引擎和 LLM 进行工单分流
-    流程：Kafka消费 → 规则匹配 → 命中则直连路由 → 未命中走 LLM 清洗
-    """
-
-    def __init__(self, rule_engine, llm_processor=None, ingest_handler=None):
-        """
-        rule_engine: RuleEngine 实例
-        llm_processor: LLM 处理函数（规则未命中时调用）
-        ingest_handler: 路由完成后的回调（如写入 ES），接收路由后的工单 dict
-        """
-        self.rule_engine = rule_engine
-        self.llm_processor = llm_processor
-        self.ingest_handler = ingest_handler
-
-    def route(self, ticket: dict) -> dict:
-        """
-        路由工单
-        返回: {**ticket, "route_result": {...}}
-        """
-        raw_text = ticket.get("raw_text", "") or ticket.get("description", "")
-
-        # Step 1: 规则匹配
-        rule_result = self.rule_engine.match(raw_text)
-
-        if rule_result["matched"] and rule_result["confidence"] >= 0.8:
-            # 规则高置信度命中，直接路由
-            ticket["route_source"] = "rule"
-            ticket["route_result"] = rule_result
-            logger.info(f"工单规则直连路由: {rule_result['category']} (置信度: {rule_result['confidence']:.2f})")
-            return ticket
-
-        # Step 2: 规则未命中或低置信度，走 LLM
-        if self.llm_processor:
-            ticket["route_source"] = "llm"
-            ticket["rule_hint"] = rule_result  # 给 LLM 提供参考
-            ticket = self.llm_processor(ticket)
-            logger.info(f"工单 LLM 路由: {ticket.get('category', 'unknown')}")
-        else:
-            ticket["route_source"] = "rule_low"
-            ticket["route_result"] = rule_result
-
-        return ticket
-
-    def handle_ticket(self, ticket: dict):
-        """Kafka 消费者回调：路由工单并触发后续处理（如入库 ES）"""
-        routed = self.route(ticket)
-        # 路由完成后调用回调（例如写入 ES）
-        if self.ingest_handler:
             try:
-                self.ingest_handler(routed)
+                self.consumer.close()
+            except Exception:
+                pass
+
+
+def _handle_event(topic: str, payload: dict):
+    """根据 Topic 分发处理"""
+    from data.ingestion.ticket_service import persist_resolution, mark_assigned_from_event
+
+    if topic == TOPIC_RESOLVED:
+        ticket_id = payload.get("ticket_id")
+        logger.info(f"收到解决事件: {ticket_id}")
+        persist_resolution(ticket_id)
+    else:
+        # 部门 Topic：确认工单进入部门后台（幂等）
+        logger.info(f"收到部门工单事件: {payload.get('ticket_id')} [{topic}]")
+        mark_assigned_from_event(payload)
+
+
+def run_worker(group_id: str = WORKER_GROUP, stop_event: threading.Event = None):
+    """
+    启动后台消费者 worker
+    订阅：所有部门 Topic + ticket-resolved
+    """
+    _ensure_topics()
+    topics = _department_topics() + [TOPIC_RESOLVED]
+    consumer = TicketConsumer(topics, group_id=group_id)
+
+    if stop_event is None:
+        # 独立进程模式：阻塞消费
+        consumer.consume(_handle_event)
+        return
+
+    # 后台线程模式：可停止
+    logger.info("Kafka 后台 worker 已启动（线程模式）")
+    while not stop_event.is_set():
+        for topic, payload in consumer.poll(timeout_ms=1000):
+            try:
+                _handle_event(topic, payload)
             except Exception as e:
-                logger.error(f"工单后续处理失败: {e}")
-        logger.info(f"工单路由完成: {routed.get('ticket_id')} → {routed.get('category', 'unknown')}")
-        return routed
+                logger.error(f"Kafka 后台处理失败: {e}")
+    consumer.close()
+    logger.info("Kafka 后台 worker 已停止")
 
 
-def run_worker(ingest_handler=None, group_id: str = "ticket-agent"):
-    """
-    启动 Kafka 工单消费者 worker
-    流程：消费 ticket-raw → 规则/LLM 路由 → 回调入库
-    """
-    from preprocess.nlp_classifier import RuleEngine
-
-    rule_engine = RuleEngine()
-    router = TicketRouter(rule_engine=rule_engine, llm_processor=None, ingest_handler=ingest_handler)
-    consumer = TicketConsumer(group_id=group_id)
-
-    logger.info("Kafka 工单消费者 worker 启动，监听 topic: %s", TOPIC_RAW)
-    try:
-        consumer.consume(router.handle_ticket)
-    except KeyboardInterrupt:
-        logger.info("收到中断信号，停止消费")
-    finally:
-        consumer.close()
+def start_resolution_worker(group_id: str = None) -> threading.Thread:
+    """在 Streamlit 进程内启动后台消费者线程，避免必须单独运行 worker"""
+    group_id = group_id or os.getenv("KAFKA_UI_WORKER_GROUP", "ticket-resolution-ui")
+    thread = threading.Thread(
+        target=run_worker,
+        kwargs={"group_id": group_id},
+        daemon=True,
+        name="ticket-kafka-worker",
+    )
+    thread.start()
+    return thread
 
 
 if __name__ == "__main__":
-    # 确保项目根目录在 path 中
     import sys
     from pathlib import Path
+
     ROOT_DIR = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(ROOT_DIR))
 
-    # 加载 .env（入库回调需要 Embedding API Key）
     from dotenv import load_dotenv
     load_dotenv(ROOT_DIR / ".env")
 
-    def _default_ingest(ticket: dict):
-        """默认入库回调：路由结果写入 ES（工单向量化入库）"""
-        from data.ingestion.ingest_docs import ingest_ticket
-        ingest_ticket(ticket)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
 
-    run_worker(ingest_handler=_default_ingest)
+    run_worker()
