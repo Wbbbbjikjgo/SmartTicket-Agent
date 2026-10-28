@@ -50,12 +50,14 @@ services:
     networks:
       - ticket-net
 
-  # ========== Agent 后端服务 ==========
-  agent-service:
+  # ========== 工单后台消费者 worker ==========
+  # 消费部门 Topic 确认工单进入后台；消费 ticket-resolved 沉淀向量与知识库
+  ticket-worker:
     build:
       context: ..
       dockerfile: agent-service/Dockerfile
-    container_name: smart-ticket-agent
+    container_name: smart-ticket-worker
+    command: ["python", "data/ingestion/kafka_queue.py"]
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -64,6 +66,7 @@ services:
     environment:
       - ES_HOST=http://elasticsearch:9200
       - KAFKA_BOOTSTRAP=kafka:9092
+      - KAFKA_WORKER_GROUP=ticket-resolution-worker
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
       - LLM_MODEL=deepseek-chat
@@ -71,8 +74,6 @@ services:
       - EMBEDDING_MODEL=text-embedding-v3
       - RERANK_MODEL=gte-rerank-v2
       - VECTOR_DIMS=1024
-    ports:
-      - "8000:8000"
     volumes:
       - ..:/app
     networks:
@@ -85,11 +86,18 @@ services:
       dockerfile: web/Dockerfile
     container_name: smart-ticket-web
     depends_on:
-      - agent-service
+      - ticket-worker
     environment:
       - ES_HOST=http://elasticsearch:9200
+      - KAFKA_BOOTSTRAP=kafka:9092
+      # 由独立 ticket-worker 消费，避免重复消费
+      - ENABLE_KAFKA_WORKER=0
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - LLM_MODEL=deepseek-chat
+      - LLM_BASE_URL=https://api.deepseek.com
+      - EMBEDDING_MODEL=text-embedding-v3
+      - VECTOR_DIMS=1024
     ports:
       - "8502:8501"
     volumes:

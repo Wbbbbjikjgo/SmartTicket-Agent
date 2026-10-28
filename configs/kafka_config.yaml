@@ -9,16 +9,22 @@ kafka:
 
   # -------- 主题定义 --------
   topics:
-    # 原始工单：用户刚提交未经任何处理的工单（原始数据）
+    # 原始工单：用户刚提交未经任何处理的工单（审计/重放）
     raw: ${KAFKA_TOPIC_RAW:-ticket-raw}
-    
-    # 路由后工单：经过规则/智能路由分配了处理组后的工单
-    routed: ${KAFKA_TOPIC_ROUTED:-ticket-routed}
+
+    # 部门 Topic：派单后按技能组推送到对应部门后台
+    dept_it: ${KAFKA_TOPIC_DEPT_IT:-ticket-dept-it}
+    dept_maintenance: ${KAFKA_TOPIC_DEPT_MAINTENANCE:-ticket-dept-maintenance}
+    dept_finance: ${KAFKA_TOPIC_DEPT_FINANCE:-ticket-dept-finance}
+    dept_service: ${KAFKA_TOPIC_DEPT_SERVICE:-ticket-dept-service}
+
+    # 解决事件：部门提交解决方案后推送，消费者负责向量与知识库沉淀
+    resolved: ${KAFKA_TOPIC_RESOLVED:-ticket-resolved}
 
   # -------- 消费者配置 --------
   consumer:
-    # 消费者组 ID（同一组内消费互斥，保证工单只被处理一次）
-    group_id: ticket-agent
+    # 消费者组 ID（同一组内消费互斥，保证事件只被处理一次）
+    group_id: ${KAFKA_WORKER_GROUP:-ticket-resolution-worker}
     
     # 当无偏移量或偏移量失效时的起始消费位置
     # earliest：从最早消息开始消费（重跑历史数据用）

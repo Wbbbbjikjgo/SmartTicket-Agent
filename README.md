@@ -92,7 +92,16 @@ pip install -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 python data/ingestion/ingest_docs.py
 ```
 
-### 4. 启动前端
+### 4. 启动 Kafka 后台消费者（本地开发）
+
+```bash
+python data/ingestion/kafka_queue.py
+```
+
+> 消费部门 Topic 确认工单进入后台，并消费 `ticket-resolved` 完成向量与知识库沉淀。
+> Streamlit 进程内也会自动启动消费者；若已单独运行该命令，可设置 `ENABLE_KAFKA_WORKER=0` 避免重复消费。
+
+### 5. 启动前端
 
 ```bash
 python -m streamlit run web/app.py --server.port 8502
@@ -100,7 +109,7 @@ python -m streamlit run web/app.py --server.port 8502
 
 访问 http://localhost:8502
 
-### 5. 停止服务
+### 6. 停止服务
 
 ```bash
 docker compose --env-file .env -f deploy/docker-compose.yml down
