@@ -1,12 +1,13 @@
 """
 FunctionCall 工具定义
 定义工单系统的所有可调用工具，供 DeepSeek Function Calling 使用
+
+底层统一走 data.ingestion.ticket_service：
+- 创建工单：立即写入 ES 关键词（不生成向量）
+- 查询状态：ES 关键词精确查询
+- 派单：更新「已委派」并推送部门 Kafka Topic
 """
-import json
-import uuid
 import logging
-from datetime import datetime
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +126,8 @@ class TicketTools:
         """
         self.es = es_client
         self.search_pipeline = search_pipeline
-        # 内存中的工单存储（生产环境应使用 ES 或数据库）
-        self._tickets = {}
+        # 仅用于本轮对话的“最近创建工单”兜底，ES 仍是唯一事实来源
+        self._recent_tickets = {}
 
     def execute_tool(self, tool_name: str, arguments: dict) -> dict:
         """执行工具调用"""
@@ -149,47 +150,36 @@ class TicketTools:
 
     def create_ticket(self, problem_type: str, description: str,
                       product: str = None, urgency: str = "中") -> dict:
-        """创建工单"""
-        ticket_id = f"GD{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}"
-        ticket = {
-            "ticket_id": ticket_id,
+        """创建工单：立即写入 ES 关键词/全文字段，状态「已创建」"""
+        from data.ingestion.ticket_service import create_ticket as svc_create
+
+        ticket = svc_create({
             "problem_type": problem_type,
+            "category": problem_type,
             "description": description,
             "product": product,
             "urgency": urgency,
-            "status": "open",
-            "created_at": datetime.now().isoformat(),
-            "assigned_to": None,
-        }
-        self._tickets[ticket_id] = ticket
+        }, es_client=self.es)
 
-        # 写入 ES（如果可用，向量化入库）
-        if self.es:
-            try:
-                from data.ingestion.ingest_docs import ingest_ticket
-                ingest_ticket(ticket)
-            except Exception as e:
-                logger.warning(f"写入 ES 失败: {e}")
+        ticket_id = ticket["ticket_id"]
+        self._recent_tickets[ticket_id] = ticket
 
-        logger.info(f"工单创建成功: {ticket_id}")
+        logger.info(f"工单创建成功: {ticket_id} (状态: {ticket.get('status')})")
         return {
             "success": True,
             "ticket_id": ticket_id,
-            "message": f"工单 {ticket_id} 已创建，问题类型: {problem_type}，紧急程度: {urgency}",
+            "status": ticket.get("status"),
+            "message": (
+                f"工单 {ticket_id} 已创建并写入工单库，"
+                f"问题类型: {problem_type}，紧急程度: {urgency}"
+            ),
         }
 
     def query_ticket_status(self, ticket_id: str) -> dict:
-        """查询工单状态"""
-        # 先从内存查
-        ticket = self._tickets.get(ticket_id)
+        """查询工单状态：ES 关键词精确查询优先"""
+        from data.ingestion.ticket_service import get_ticket
 
-        # 内存没有则查 ES
-        if not ticket and self.es:
-            try:
-                resp = self.es.get(index="tickets", id=ticket_id)
-                ticket = resp["_source"]
-            except Exception:
-                pass
+        ticket = get_ticket(ticket_id, es_client=self.es) or self._recent_tickets.get(ticket_id)
 
         if not ticket:
             return {"success": False, "message": f"未找到工单 {ticket_id}"}
@@ -199,11 +189,14 @@ class TicketTools:
             "ticket": {
                 "ticket_id": ticket.get("ticket_id"),
                 "status": ticket.get("status"),
-                "problem_type": ticket.get("problem_type"),
+                "problem_type": ticket.get("problem_type") or ticket.get("category"),
                 "description": ticket.get("description"),
                 "urgency": ticket.get("urgency"),
                 "assigned_to": ticket.get("assigned_to"),
+                "resolution": ticket.get("resolution"),
                 "created_at": ticket.get("created_at"),
+                "assigned_at": ticket.get("assigned_at"),
+                "resolved_at": ticket.get("resolved_at"),
             },
         }
 
@@ -237,40 +230,35 @@ class TicketTools:
                 return source[field]
         return (content or "")[:40]
 
-    def assign_engineer(self, ticket_id: str = None, skill_group: str = None, reason: str = None) -> dict:
-        """派单给工程师（ticket_id 缺省时自动选择最近创建的工单）"""
-        # 未提供工单号时，自动取最近创建的工单
-        if not ticket_id and self._tickets:
-            ticket_id = sorted(self._tickets.keys())[-1]
+    def assign_engineer(self, ticket_id: str = None, skill_group: str = None,
+                        reason: str = None) -> dict:
+        """派单：更新 ES「已委派」并通过 Kafka 推送到部门后台"""
+        from data.ingestion.ticket_service import assign_ticket, find_latest_ticket
+
+        # 未提供工单号时，优先取本轮最近创建的工单，再取 ES 最新工单
+        if not ticket_id and self._recent_tickets:
+            ticket_id = list(self._recent_tickets.keys())[-1]
         if not ticket_id:
-            return {"success": False, "message": "未提供工单号，且当前会话中无可用工单"}
+            latest = find_latest_ticket(es_client=self.es)
+            ticket_id = latest.get("ticket_id")
+        if not ticket_id:
+            return {"success": False, "message": "未提供工单号，且当前无可用工单"}
         if not skill_group:
             return {"success": False, "message": "未提供目标技能组"}
 
-        ticket = self._tickets.get(ticket_id)
-        if not ticket and self.es:
-            try:
-                resp = self.es.get(index="tickets", id=ticket_id)
-                ticket = resp["_source"]
-            except Exception:
-                pass
-
-        if not ticket:
-            return {"success": False, "message": f"未找到工单 {ticket_id}"}
-
-        # 更新工单
-        ticket["assigned_to"] = skill_group
-        ticket["status"] = "assigned"
-        ticket["assign_reason"] = reason
-        self._tickets[ticket_id] = ticket
-
-        if self.es:
-            try:
-                self.es.index(index="tickets", id=ticket_id, document=ticket)
-            except Exception as e:
-                logger.warning(f"更新 ES 失败: {e}")
+        result = assign_ticket(
+            ticket_id=ticket_id,
+            skill_group=skill_group,
+            reason=reason,
+            es_client=self.es,
+        )
+        self._recent_tickets[ticket_id] = result.get("ticket", {})
 
         return {
-            "success": True,
-            "message": f"工单 {ticket_id} 已派发给 {skill_group}" + (f"，原因: {reason}" if reason else ""),
+            "success": result.get("success", False),
+            "ticket_id": ticket_id,
+            "skill_group": skill_group,
+            "status": result.get("status"),
+            "kafka_pushed": result.get("kafka_pushed", False),
+            "message": result.get("message", f"工单 {ticket_id} 已派发给 {skill_group}"),
         }
