@@ -52,8 +52,11 @@ class KnowledgeAgent:
         将已关闭工单沉淀为知识
         流程：LLM摘要 → 向量化 → 去重检测 → 入库
         """
-        if ticket.get("status") != "closed":
-            return {"success": False, "message": "工单未关闭，暂不沉淀"}
+        if ticket.get("status") not in ("已解决", "resolved", "closed"):
+            return {"success": False, "message": "工单未解决，暂不沉淀"}
+
+        if not ticket.get("resolution"):
+            return {"success": False, "message": "工单缺少解决方案，暂不沉淀"}
 
         # Step 1: LLM 提炼知识
         knowledge = self._summarize(ticket)
