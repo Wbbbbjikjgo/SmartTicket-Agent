@@ -22,6 +22,16 @@ st.set_page_config(
 
 
 @st.cache_resource(show_spinner=False)
+def _ensure_es_indices():
+    """启动时同步 ES mapping（补齐 content/keywords 等新字段）"""
+    try:
+        from data.ingestion.ingest_docs import create_indices
+        create_indices()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"ES 索引初始化失败: {e}")
+
+
+@st.cache_resource(show_spinner=False)
 def _start_kafka_worker():
     """
     启动 Kafka 解决事件消费者（进程内后台线程）。
@@ -38,6 +48,11 @@ def _start_kafka_worker():
         logging.getLogger(__name__).warning(f"Kafka 后台消费者启动失败: {e}")
         return None
 
+
+try:
+    _ensure_es_indices()
+except Exception:
+    pass
 
 try:
     _start_kafka_worker()
