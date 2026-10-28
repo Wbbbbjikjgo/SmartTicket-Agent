@@ -358,17 +358,6 @@ def append_resolved_ticket(ticket: dict):
     _append_source_file("tickets.json", payload)
 
 
-def add_ticket(ticket_data: dict) -> str:
-    """新增工单：持久化到本地知识源 + 入库 ES（未解决工单不生成向量）"""
-    ticket_data.setdefault(
-        "ticket_id",
-        f"GD{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}",
-    )
-    _append_source_file("tickets.json", ticket_data)
-    resolved = normalize_status(ticket_data.get("status")) == "已解决"
-    return ingest_ticket(ticket_data, with_vector=resolved)
-
-
 def add_knowledge(kb_data: dict) -> str:
     """新增知识条目：持久化到本地知识源 + 入库 ES"""
     kb_data.setdefault("kb_id", f"KB{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}")
