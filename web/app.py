@@ -1,7 +1,9 @@
 """
 智能工单系统 - Streamlit 前端主入口
 """
+import os
 import sys
+import logging
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -17,6 +19,30 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+@st.cache_resource(show_spinner=False)
+def _start_kafka_worker():
+    """
+    启动 Kafka 解决事件消费者（进程内后台线程）。
+    解决工单后由消费者完成向量与知识库沉淀，避免必须单独启动 worker。
+    Docker 部署时由独立 worker 服务处理，可设置 ENABLE_KAFKA_WORKER=0 关闭。
+    """
+    if os.getenv("ENABLE_KAFKA_WORKER", "1") == "0":
+        return None
+    try:
+        from data.ingestion.kafka_queue import start_resolution_worker
+        logging.getLogger(__name__).info("启动 Kafka 后台消费者线程")
+        return start_resolution_worker()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Kafka 后台消费者启动失败: {e}")
+        return None
+
+
+try:
+    _start_kafka_worker()
+except Exception:
+    pass
 
 # ========== 全局样式 ==========
 st.markdown("""
@@ -169,7 +195,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "导航",
-        ["📊 工单看板", "💬 智能问答", "🔍 知识库"],
+        ["📊 工单看板", "🏢 部门工作台", "💬 智能问答", "🔍 知识库"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -182,6 +208,8 @@ with st.sidebar:
 # ========== 路由 ==========
 if page == "📊 工单看板":
     from web.pages.dashboard import render; render()
+elif page == "🏢 部门工作台":
+    from web.pages.departments import render; render()
 elif page == "💬 智能问答":
     from web.pages.chat import render; render()
 elif page == "🔍 知识库":
