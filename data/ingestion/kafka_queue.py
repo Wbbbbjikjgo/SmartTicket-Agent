@@ -138,20 +138,6 @@ class TicketConsumer:
     def available(self) -> bool:
         return self.consumer is not None
 
-    def poll(self, timeout_ms: int = 1000, max_records: int = 50) -> list:
-        """非阻塞拉取一批消息，返回 [(topic, payload), ...]"""
-        if not self.available:
-            return []
-        events = []
-        try:
-            records = self.consumer.poll(timeout_ms=timeout_ms, max_records=max_records)
-            for tp, messages in records.items():
-                for msg in messages:
-                    events.append((tp.topic, msg.value))
-        except Exception as e:
-            logger.error(f"Kafka 拉取消息失败: {e}")
-        return events
-
     def consume(self, handler: Callable[[str, dict], None], max_messages: int = None):
         """持续消费"""
         if not self.available:
