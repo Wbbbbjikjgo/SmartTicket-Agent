@@ -50,6 +50,9 @@ TICKETS_MAPPING = {
             "priority": {"type": "keyword"},
             "urgency": {"type": "keyword"},
             "assigned_to": {"type": "keyword"},
+            "assign_reason": {"type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart"},
+            "error_code": {"type": "keyword"},
+            "tags": {"type": "keyword"},
             "description": {
                 "type": "text",
                 "analyzer": "ik_max_word",
@@ -60,7 +63,23 @@ TICKETS_MAPPING = {
                 "analyzer": "ik_max_word",
                 "search_analyzer": "ik_smart",
             },
+            # 全文检索字段：工单创建时即写入，供 BM25 关键词检索
+            "content": {
+                "type": "text",
+                "analyzer": "ik_max_word",
+                "search_analyzer": "ik_smart",
+            },
+            # 关键词字段：问题类型/产品/错误码/标签等，供关键词命中
+            "keywords": {
+                "type": "text",
+                "analyzer": "ik_max_word",
+                "search_analyzer": "ik_smart",
+                "fields": {"raw": {"type": "keyword"}},
+            },
             "status": {"type": "keyword"},
+            "satisfaction": {"type": "float"},
+            "vector_stored": {"type": "boolean"},
+            "knowledge_settled": {"type": "boolean"},
             "content_vector": {
                 "type": "dense_vector",
                 "dims": VECTOR_DIMS,
@@ -69,6 +88,8 @@ TICKETS_MAPPING = {
             },
             "created_date": {"type": "date"},
             "created_at": {"type": "date"},
+            "assigned_at": {"type": "date"},
+            "resolved_at": {"type": "date"},
             "updated_date": {"type": "date"},
         }
     }
@@ -137,7 +158,7 @@ FAQ_MAPPING = {
 
 
 def create_indices():
-    """创建所有 ES 索引"""
+    """创建所有 ES 索引（已存在时增量补齐新增字段）"""
     indices = {
         "tickets": TICKETS_MAPPING,
         "knowledge_base": KNOWLEDGE_MAPPING,
@@ -148,26 +169,119 @@ def create_indices():
             es.indices.create(index=name, body=mapping)
             logger.info(f"索引 {name} 创建成功")
         else:
-            logger.info(f"索引 {name} 已存在，跳过")
+            # 增量补充 mapping 中新增的字段（如 content / keywords / 状态时间）
+            try:
+                es.indices.put_mapping(index=name, properties=mapping["mappings"]["properties"])
+                logger.info(f"索引 {name} 已存在，mapping 已同步")
+            except Exception as e:
+                logger.warning(f"索引 {name} mapping 更新失败: {e}")
 
 
-def ingest_ticket(ticket_data: dict, content_vector: list = None) -> str:
-    """导入单条工单到 ES（content_vector 可复用已计算的向量，避免重复调用 Embedding）"""
-    if content_vector is None:
-        text_for_vector = f"{ticket_data.get('description') or ''} {ticket_data.get('resolution') or ''}"
-        content_vector = embedder.embed_text(text_for_vector)
-    ticket_data["content_vector"] = content_vector
-    ticket_data.setdefault("created_date", datetime.now().isoformat())
-    ticket_data.setdefault("status", "open")
+# 状态统一：历史数据兼容 open/assigned/closed → 中文状态
+_STATUS_ALIASES = {
+    "open": "已创建",
+    "created": "已创建",
+    "已创建": "已创建",
+    "assigned": "已委派",
+    "已委派": "已委派",
+    "resolved": "已解决",
+    "closed": "已解决",
+    "已解决": "已解决",
+}
 
-    doc_id = ticket_data.get("ticket_id")
-    es.index(
+
+def normalize_status(status: str) -> str:
+    """统一工单状态为中文状态值"""
+    return _STATUS_ALIASES.get(status or "", status or "已创建")
+
+
+def _ticket_content(ticket: dict) -> str:
+    """构造工单全文检索内容（创建时即可写入）"""
+    fields = [
+        "description", "resolution", "problem_type", "category",
+        "product", "error_code", "assigned_to", "assign_reason",
+    ]
+    return " ".join(str(ticket[f]) for f in fields if ticket.get(f))
+
+
+def _ticket_keywords(ticket: dict) -> str:
+    """构造工单关键词字段（问题类型/产品/错误码/标签等）"""
+    values = []
+    for field in ("problem_type", "category", "product", "urgency", "error_code", "assigned_to"):
+        if ticket.get(field):
+            values.append(str(ticket[field]))
+    tags = ticket.get("tags")
+    if isinstance(tags, list):
+        values.extend(str(t) for t in tags if t)
+    elif tags:
+        values.append(str(tags))
+    # 去重并保持顺序
+    return " ".join(dict.fromkeys(values))
+
+
+def ingest_ticket(ticket_data: dict, content_vector: list = None,
+                  with_vector: bool = True, es_client=None) -> str:
+    """
+    导入单条工单到 ES
+
+    with_vector=False：仅写入关键词/全文字段（创建工单时使用，避免未解决工单占用向量）
+    with_vector=True ：同时写入向量（解决后沉淀 / 历史工单导入时使用）
+    """
+    client = es_client or es
+    doc = dict(ticket_data)
+
+    doc["status"] = normalize_status(doc.get("status"))
+    doc.setdefault("created_at", datetime.now().isoformat())
+    doc.setdefault("created_date", doc["created_at"])
+    doc["updated_date"] = datetime.now().isoformat()
+    doc["content"] = doc.get("content") or _ticket_content(doc)
+    doc["keywords"] = doc.get("keywords") or _ticket_keywords(doc)
+
+    if content_vector is None and with_vector:
+        text_for_vector = f"{doc.get('description') or ''} {doc.get('resolution') or ''}".strip()
+        if text_for_vector:
+            content_vector = embedder.embed_text(text_for_vector)
+
+    if content_vector is not None:
+        doc["content_vector"] = content_vector
+        doc["vector_stored"] = True
+
+    doc_id = doc.get("ticket_id")
+    client.index(
         index="tickets",
         id=doc_id,
-        document=ticket_data,
+        document=doc,
     )
-    logger.info(f"工单 {doc_id} 导入成功")
+    logger.info(f"工单 {doc_id} 导入成功（向量: {'是' if content_vector is not None else '否'}）")
     return doc_id
+
+
+def update_ticket(ticket_id: str, updates: dict, es_client=None) -> bool:
+    """增量更新工单（不存在时自动创建）"""
+    client = es_client or es
+    doc = dict(updates)
+    doc.setdefault("updated_date", datetime.now().isoformat())
+    try:
+        client.update(
+            index="tickets",
+            id=ticket_id,
+            doc=doc,
+            upsert={"ticket_id": ticket_id, **doc},
+        )
+        logger.info(f"工单 {ticket_id} 更新成功: {list(doc.keys())}")
+        return True
+    except Exception as e:
+        logger.error(f"工单 {ticket_id} 更新失败: {e}")
+        return False
+
+
+def get_ticket(ticket_id: str, es_client=None) -> dict:
+    """按工单号读取 ES 文档（关键词精确查询）"""
+    client = es_client or es
+    try:
+        return client.get(index="tickets", id=ticket_id)["_source"]
+    except Exception:
+        return None
 
 
 def ingest_knowledge(kb_data: dict, content_vector: list = None) -> str:
@@ -230,14 +344,29 @@ def _append_source_file(filename: str, data: dict):
     path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def append_resolved_ticket(ticket: dict):
+    """将已解决工单沉淀到本地知识源（按工单号去重）"""
+    items = _read_source_file("tickets.json")
+    if any(t.get("ticket_id") == ticket.get("ticket_id") for t in items):
+        return
+    fields = (
+        "ticket_id", "product", "problem_type", "category", "priority", "urgency",
+        "description", "resolution", "status", "assigned_to", "error_code",
+        "created_at", "assigned_at", "resolved_at",
+    )
+    payload = {k: ticket.get(k) for k in fields if ticket.get(k) is not None}
+    _append_source_file("tickets.json", payload)
+
+
 def add_ticket(ticket_data: dict) -> str:
-    """新增工单：持久化到本地知识源 + 入库 ES"""
+    """新增工单：持久化到本地知识源 + 入库 ES（未解决工单不生成向量）"""
     ticket_data.setdefault(
         "ticket_id",
         f"GD{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:4].upper()}",
     )
     _append_source_file("tickets.json", ticket_data)
-    return ingest_ticket(ticket_data)
+    resolved = normalize_status(ticket_data.get("status")) == "已解决"
+    return ingest_ticket(ticket_data, with_vector=resolved)
 
 
 def add_knowledge(kb_data: dict) -> str:
@@ -260,7 +389,8 @@ def load_knowledge_source():
 
     tickets = _read_source_file("tickets.json")
     for t in tickets:
-        ingest_ticket(t)
+        # 只有已给出解决方案的工单才生成向量
+        ingest_ticket(t, with_vector=bool(t.get("resolution")))
 
     knowledge = _read_source_file("knowledge_base.json")
     for k in knowledge:
