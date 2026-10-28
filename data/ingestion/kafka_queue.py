@@ -7,6 +7,7 @@ Kafka 工单消息队列
 """
 import os
 import json
+import time
 import logging
 import threading
 from datetime import datetime
@@ -156,6 +157,7 @@ class TicketConsumer:
                     logger.error(f"处理 Kafka 消息异常: {e}")
         except KeyboardInterrupt:
             logger.info("收到中断信号，停止消费")
+            raise
         finally:
             self.close()
 
@@ -185,11 +187,22 @@ def run_worker(group_id: str = WORKER_GROUP):
     """
     启动后台消费者 worker
     订阅：所有部门 Topic + ticket-resolved
+    Kafka 未就绪时自动重试，避免启动顺序导致消费者永久退出。
     """
-    _ensure_topics()
     topics = _department_topics() + [TOPIC_RESOLVED]
-    consumer = TicketConsumer(topics, group_id=group_id)
-    consumer.consume(_handle_event)
+    while True:
+        _ensure_topics()
+        consumer = TicketConsumer(topics, group_id=group_id)
+        if not consumer.available:
+            logger.warning("Kafka 暂不可用，5 秒后重试...")
+            time.sleep(5)
+            continue
+        try:
+            consumer.consume(_handle_event)
+        except KeyboardInterrupt:
+            return
+        logger.warning("Kafka 消费连接中断，5 秒后重连...")
+        time.sleep(5)
 
 
 def start_resolution_worker(group_id: str = None) -> threading.Thread:
