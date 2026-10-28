@@ -9,24 +9,21 @@ import streamlit as st
 
 @st.cache_resource
 def _get_backend():
-    """缓存 ES 客户端 / 检索管道 / Embedding，避免每次消息重复初始化"""
+    """缓存 ES 客户端 / 检索管道，避免每次消息重复初始化"""
     from elasticsearch import Elasticsearch
-    from data.ingestion.embedding_service import DashScopeEmbedding
     from retrieval.hybrid_search import HybridSearchPipeline
 
     es_client = Elasticsearch(os.getenv("ES_HOST", "http://localhost:9200"))
-    embedder = DashScopeEmbedding()
     search_pipeline = HybridSearchPipeline()
-    return es_client, embedder, search_pipeline
+    return es_client, search_pipeline
 
 
 def _run_agent(user_input: str) -> str:
     """运行多 Agent 协同流程（接入 ES 与检索管道）"""
     from agents.graph import MultiAgentOrchestrator
-    es_client, embedder, search_pipeline = _get_backend()
+    es_client, search_pipeline = _get_backend()
     orchestrator = MultiAgentOrchestrator(
         es_client=es_client,
-        embedder=embedder,
         search_pipeline=search_pipeline,
     )
     result = orchestrator.run(user_input)

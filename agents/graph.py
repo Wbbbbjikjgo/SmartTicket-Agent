@@ -1,12 +1,9 @@
 """
 多智能体协同编排（LangGraph）
-编排流程：意图识别 → 槽位填充 → 工具调用 → 派单 → 知识沉淀
+编排流程：意图识别 → 槽位填充 → 创建工单（关键词入库）→ 智能派单（Kafka 推送部门）→ 回复
 """
-import os
-import json
 import logging
-from typing import TypedDict, Annotated, Literal
-from datetime import datetime
+from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
 
@@ -14,7 +11,6 @@ from agents.intent_agent import IntentAgent
 from agents.slot_filling_agent import SlotFillingAgent
 from agents.ticket_agent import TicketAgent
 from agents.assign_agent import AssignAgent
-from agents.knowledge_agent import KnowledgeAgent
 from tools.function_tools import TicketTools
 
 logger = logging.getLogger(__name__)
@@ -34,7 +30,6 @@ class AgentState(TypedDict):
     ticket_id: str                     # 工单ID
     tool_calls: list                   # 工具调用记录
     assign_result: dict                # 派单结果
-    knowledge_result: dict             # 知识沉淀结果
     step: str                          # 当前步骤
 
 
@@ -43,8 +38,8 @@ class AgentState(TypedDict):
 class MultiAgentOrchestrator:
     """多智能体协同编排器"""
 
-    def __init__(self, es_client=None, embedder=None, search_pipeline=None):
-        # 初始化工具
+    def __init__(self, es_client=None, search_pipeline=None):
+        # 初始化工具（创建/查询/派单均走 ticket_service）
         self.ticket_tools = TicketTools(es_client=es_client, search_pipeline=search_pipeline)
 
         # 初始化各 Agent
@@ -52,7 +47,6 @@ class MultiAgentOrchestrator:
         self.slot_agent = SlotFillingAgent()
         self.ticket_agent = TicketAgent(self.ticket_tools)
         self.assign_agent = AssignAgent(self.ticket_tools)
-        self.knowledge_agent = KnowledgeAgent(es_client=es_client, embedder=embedder)
 
         # 构建 LangGraph
         self.graph = self._build_graph()
@@ -68,7 +62,6 @@ class MultiAgentOrchestrator:
         workflow.add_node("query_ticket", self._query_ticket_node)
         workflow.add_node("search_knowledge", self._search_knowledge_node)
         workflow.add_node("assign_ticket", self._assign_node)
-        workflow.add_node("settle_knowledge", self._settle_knowledge_node)
         workflow.add_node("generate_response", self._response_node)
 
         # 入口
@@ -90,7 +83,7 @@ class MultiAgentOrchestrator:
             "slot_filling",
             self._route_after_slot,
             {
-                # 槽位完整 → 创建工单；槽位缺失 → 先追问补充信息（generate_response 输出追问）
+                # 槽位完整 → 创建工单；槽位缺失 → 先追问补充信息
                 "create_ticket": "create_ticket",
                 "follow_up": "generate_response",
             },
@@ -100,7 +93,6 @@ class MultiAgentOrchestrator:
         workflow.add_edge("assign_ticket", "generate_response")
         workflow.add_edge("query_ticket", "generate_response")
         workflow.add_edge("search_knowledge", "generate_response")
-        workflow.add_edge("settle_knowledge", END)
         workflow.add_edge("generate_response", END)
 
         return workflow.compile()
@@ -127,7 +119,7 @@ class MultiAgentOrchestrator:
         }
 
     def _create_ticket_node(self, state: AgentState) -> dict:
-        """创建工单节点"""
+        """创建工单节点：立即写入 ES 关键词（状态「已创建」，不生成向量）"""
         slots = state.get("slots", {})
         result = self.ticket_tools.create_ticket(
             problem_type=slots.get("problem_type", "其他"),
@@ -142,7 +134,7 @@ class MultiAgentOrchestrator:
         }
 
     def _query_ticket_node(self, state: AgentState) -> dict:
-        """查询工单节点"""
+        """查询工单节点：FunctionCall → ES 关键词查询"""
         result = self.ticket_agent.process(state["user_input"])
         return {
             "response": result["response"],
@@ -151,7 +143,7 @@ class MultiAgentOrchestrator:
         }
 
     def _search_knowledge_node(self, state: AgentState) -> dict:
-        """知识检索节点"""
+        """知识检索节点（只检索已解决工单/知识库/FAQ）"""
         result = self.ticket_tools.search_knowledge(state["user_input"])
         results = result.get("results", []) if isinstance(result, dict) else []
         if result.get("success") and results:
@@ -168,7 +160,7 @@ class MultiAgentOrchestrator:
         }
 
     def _assign_node(self, state: AgentState) -> dict:
-        """派单节点"""
+        """派单节点：ES 更新「已委派」+ Kafka 推送到部门后台"""
         ticket_id = state.get("ticket_id")
         if not ticket_id:
             return {"step": "assign", "assign_result": {"success": False}}
@@ -181,29 +173,11 @@ class MultiAgentOrchestrator:
             "step": "assign",
         }
 
-    def _settle_knowledge_node(self, state: AgentState) -> dict:
-        """知识沉淀节点"""
-        ticket_id = state.get("ticket_id")
-        if not ticket_id:
-            return {"step": "settle_knowledge"}
-
-        ticket = {
-            "ticket_id": ticket_id,
-            "status": "closed",
-            **state.get("slots", {}),
-        }
-        result = self.knowledge_agent.settle(ticket)
-        return {
-            "knowledge_result": result,
-            "step": "settle_knowledge",
-        }
-
     def _response_node(self, state: AgentState) -> dict:
         """生成最终回复节点"""
         if state.get("response"):
             return {"step": "response"}
 
-        # 根据状态生成回复
         intent = state.get("intent", "")
         ticket_id = state.get("ticket_id", "")
         assign_result = state.get("assign_result", {})
@@ -214,12 +188,15 @@ class MultiAgentOrchestrator:
                 "如问题紧急，也可以直接拨打 IT 值班热线。"
             )
         elif intent == "create_ticket" and ticket_id:
-            group = assign_result.get("skill_group", "未分配")
+            group = assign_result.get("skill_group", "待分配")
+            status = assign_result.get("status", "已委派")
+            sync_hint = "已同步到部门后台" if assign_result.get("kafka_pushed") else "已记录到工单库"
             response = (
                 f"工单已创建成功！\n\n"
                 f"工单号：{ticket_id}\n"
-                f"已派发给：{group}\n"
-                f"我们会尽快处理您的问题。"
+                f"当前状态：{status}\n"
+                f"处理部门：{group}\n"
+                f"{sync_hint}，我们会尽快处理您的问题。"
             )
         elif state.get("follow_up"):
             response = state["follow_up"]
@@ -268,7 +245,6 @@ class MultiAgentOrchestrator:
             "ticket_id": None,
             "tool_calls": [],
             "assign_result": {},
-            "knowledge_result": {},
             "step": "",
         }
 
@@ -281,23 +257,3 @@ class MultiAgentOrchestrator:
             "assign_result": final_state.get("assign_result", {}),
             "step": final_state.get("step", ""),
         }
-
-    def settle_ticket(self, ticket: dict) -> dict:
-        """单独调用知识沉淀流程"""
-        initial_state = {
-            "user_input": "",
-            "intent": "settle",
-            "intent_confidence": 1.0,
-            "slots": {},
-            "slots_complete": True,
-            "follow_up": None,
-            "response": "",
-            "ticket_id": ticket.get("ticket_id"),
-            "tool_calls": [],
-            "assign_result": {},
-            "knowledge_result": {},
-            "step": "",
-        }
-        # 直接走知识沉淀节点
-        result = self.knowledge_agent.settle(ticket)
-        return result
