@@ -7,7 +7,7 @@ import json
 import logging
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 

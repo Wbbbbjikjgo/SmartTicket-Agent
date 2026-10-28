@@ -11,7 +11,6 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 from preprocess.nlp_classifier import RuleEngine
-from data.ingestion.ticket_service import SKILL_GROUPS
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +37,6 @@ ASSIGN_PROMPT = """你是智能派单专家。请根据工单信息，决定将�
 
 class AssignAgent:
     """智能派单 Agent：规则/LLM 决策 → ES 更新「已委派」→ Kafka 推送部门"""
-
-    SKILL_GROUPS = SKILL_GROUPS
 
     def __init__(self, ticket_tools=None):
         self.ticket_tools = ticket_tools

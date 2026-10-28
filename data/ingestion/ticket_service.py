@@ -131,7 +131,9 @@ def assign_ticket(ticket_id: str, skill_group: str, reason: str = None,
     """
     派单：更新 ES 状态为「已委派」，并通过 Kafka 推送到目标部门后台。
     """
-    from data.ingestion.ingest_docs import update_ticket
+    from data.ingestion.ingest_docs import (
+        update_ticket, _ticket_content, _ticket_keywords,
+    )
 
     ticket = get_ticket(ticket_id, es_client=es_client) or {"ticket_id": ticket_id}
     now = _now()
@@ -142,8 +144,12 @@ def assign_ticket(ticket_id: str, skill_group: str, reason: str = None,
         "assigned_at": now,
         "updated_date": now,
     }
-    ok = update_ticket(ticket_id, updates, es_client=es_client)
     ticket.update(updates)
+    # 派单后同步更新全文/关键词字段，便于关键词检索命中部门与派单理由
+    updates["content"] = _ticket_content(ticket)
+    updates["keywords"] = _ticket_keywords(ticket)
+    ticket.update({"content": updates["content"], "keywords": updates["keywords"]})
+    ok = update_ticket(ticket_id, updates, es_client=es_client)
 
     kafka_pushed = _push_to_department(ticket, skill_group)
     logger.info(f"工单派单: {ticket_id} → {skill_group} (Kafka: {'成功' if kafka_pushed else '未推送'})")
