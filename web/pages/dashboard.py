@@ -29,16 +29,18 @@ def _stats() -> dict:
         )
         by_status = {b["key"]: b["doc_count"] for b in agg["aggregations"]["by_status"]["buckets"]}
         by_category = {b["key"]: b["doc_count"] for b in agg["aggregations"]["by_category"]["buckets"]}
-        total = sum(by_status.values())
+        created = by_status.get("已创建", 0) + by_status.get("open", 0) + by_status.get("created", 0)
+        assigned = by_status.get("已委派", 0) + by_status.get("assigned", 0)
+        resolved = by_status.get("已解决", 0) + by_status.get("closed", 0) + by_status.get("resolved", 0)
         return {
-            "total": total,
-            "open": by_status.get("open", 0),
-            "assigned": by_status.get("assigned", 0),
-            "closed": by_status.get("closed", 0),
+            "total": created + assigned + resolved,
+            "created": created,
+            "assigned": assigned,
+            "resolved": resolved,
             "by_category": by_category,
         }
     except Exception:
-        return {"total": 0, "open": 0, "assigned": 0, "closed": 0, "by_category": {}}
+        return {"total": 0, "created": 0, "assigned": 0, "resolved": 0, "by_category": {}}
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -60,9 +62,14 @@ def _recent_tickets(limit: int = 10) -> list:
 
 
 _STATUS_MAP = {
-    "open": ("待处理", "open"),
-    "assigned": ("处理中", "assigned"),
-    "closed": ("已关闭", "closed"),
+    "已创建": ("已创建", "open"),
+    "已委派": ("已委派", "assigned"),
+    "已解决": ("已解决", "closed"),
+    "open": ("已创建", "open"),
+    "created": ("已创建", "open"),
+    "assigned": ("已委派", "assigned"),
+    "closed": ("已解决", "closed"),
+    "resolved": ("已解决", "closed"),
 }
 _URGENCY_MAP = {"高": "high", "中": "mid", "低": "low"}
 
@@ -77,9 +84,9 @@ def render():
     c1, c2, c3, c4 = st.columns(4)
     cards = [
         (c1, "m-indigo", s["total"], "工单总量", "全部工单"),
-        (c2, "m-amber", s["open"], "待处理", "等待分配"),
-        (c3, "m-blue", s["assigned"], "处理中", "已派单"),
-        (c4, "m-emerald", s["closed"], "已关闭", "已解决"),
+        (c2, "m-amber", s["created"], "已创建", "等待派单"),
+        (c3, "m-blue", s["assigned"], "已委派", "部门处理中"),
+        (c4, "m-emerald", s["resolved"], "已解决", "已沉淀知识"),
     ]
     for col, cls, val, label, foot in cards:
         with col:
@@ -146,8 +153,8 @@ def render():
         import pandas as pd
         status_df = pd.DataFrame(
             {
-                "状态": ["待处理", "处理中", "已关闭"],
-                "数量": [s["open"], s["assigned"], s["closed"]],
+                "状态": ["已创建", "已委派", "已解决"],
+                "数量": [s["created"], s["assigned"], s["resolved"]],
             }
         )
         st.bar_chart(status_df.set_index("状态"), height=200, color="#8b5cf6")
