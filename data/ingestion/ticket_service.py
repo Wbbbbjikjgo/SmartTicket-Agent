@@ -135,6 +135,10 @@ def assign_ticket(ticket_id: str, skill_group: str, reason: str = None,
         update_ticket, _ticket_content, _ticket_keywords,
     )
 
+    if skill_group not in SKILL_GROUPS:
+        logger.warning(f"未知技能组「{skill_group}」，回退到{DEFAULT_GROUP}")
+        skill_group = DEFAULT_GROUP
+
     ticket = get_ticket(ticket_id, es_client=es_client) or {"ticket_id": ticket_id}
     now = _now()
     updates = {
